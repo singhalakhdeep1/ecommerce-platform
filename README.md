@@ -1,67 +1,52 @@
 # E-Commerce Platform API
 
-![Node.js](https://img.shields.io/badge/Node.js-18.x-green)
-![Express](https://img.shields.io/badge/Express-4.18-white)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-blue)
-![Sequelize](https://img.shields.io/badge/Sequelize-6.35-blue)
-![Stripe](https://img.shields.io/badge/Stripe-14.5-purple)
+An e-commerce backend API with PostgreSQL, Sequelize ORM, Stripe payments, inventory management, and analytics.
 
-A production-ready e-commerce backend API with PostgreSQL, Sequelize ORM, Stripe payments, inventory management, and comprehensive analytics.
+## Overview
 
-## 📋 Overview
+This API handles online store operations including product management, shopping cart, order processing, payment integration, and customer analytics. Built with Node.js, Express, PostgreSQL, and Sequelize.
 
-The E-Commerce Platform API is a comprehensive backend solution designed to handle online store operations including product management, shopping cart, order processing, payment integration, and customer analytics. Built with Node.js, Express, PostgreSQL, and Sequelize, this API implements industry-standard e-commerce patterns with enterprise-grade features.
+## Features
 
-## ✨ Features
+- Product management with variants and categories
+- Shopping cart with guest and authenticated user support
+- Order processing lifecycle
+- Stripe and PayPal payment integration
+- Real-time stock tracking and low-stock alerts
+- Hierarchical category structure
+- Product reviews and ratings
+- Wishlist management
+- Discount and coupon system
+- Multiple shipping providers
+- Automated tax calculation
+- Subscription management
+- Sales analytics
+- Customer segmentation
+- Marketing campaigns
+- A/B testing
+- Conversion tracking
+- Inventory reports
+- PCI DSS compliant payment processing
+- Fraud detection
+- Rate limiting
+- Redis caching
+- Database indexing
+- Webhook support
 
-### Core E-Commerce
-- **Product Management**: Full CRUD for products with variants and categories
-- **Shopping Cart**: Persistent cart with guest and authenticated user support
-- **Order Processing**: Complete order lifecycle from creation to fulfillment
-- **Payment Integration**: Stripe and PayPal payment processing
-- **Inventory Management**: Real-time stock tracking and low-stock alerts
-- **Category Management**: Hierarchical category structure with filtering
+## Tech Stack
 
-### Advanced Features
-- **Product Reviews & Ratings**: Customer reviews with moderation
-- **Wishlist Management**: Save products for later purchase
-- **Discount & Coupons**: Promotional code system with validation
-- **Shipping Integration**: Multiple shipping providers and rate calculation
-- **Tax Calculation**: Automated tax calculation based on location
-- **Subscription Management**: Recurring billing for subscription products
+- Node.js 18.x
+- Express.js 4.18.x
+- PostgreSQL 15.x
+- Sequelize 6.35.x
+- Stripe 14.5.x
+- PayPal SDK 1.0.x
+- Redis 7.x
+- JWT 9.0.x
+- Bcryptjs 2.4.x
+- Winston 3.10.x
 
-### Analytics & Marketing
-- **Sales Analytics**: Revenue, orders, and customer metrics
-- **Customer Segmentation**: Group customers by behavior and purchase history
-- **Marketing Campaigns**: Email campaigns and promotional offers
-- **A/B Testing**: Test different product displays and pricing
-- **Conversion Tracking**: Track customer journey and conversion rates
-- **Inventory Reports**: Stock levels, reorder points, and forecasting
-
-### Security & Performance
-- **Payment Security**: PCI DSS compliant payment processing
-- **Fraud Detection**: Automated fraud detection and prevention
-- **Rate Limiting**: API rate limiting to prevent abuse
-- **Caching**: Redis caching for frequently accessed data
-- **Database Indexing**: Optimized queries for performance
-- **Webhook Support**: Real-time notifications for payment events
-
-## 🛠️ Tech Stack
-
-| Technology | Version | Purpose |
-|------------|---------|---------|
-| Node.js | 18.x | Runtime environment |
-| Express.js | 4.18.x | Web framework |
-| PostgreSQL | 15.x | Relational database |
-| Sequelize | 6.35.x | ORM |
-| Stripe | 14.5.x | Payment processing |
-| PayPal SDK | 1.0.x | Alternative payment |
-| Redis | 7.x | Caching layer |
-| JWT | 9.0.x | Authentication |
-| Bcryptjs | 2.4.x | Password hashing |
-| Winston | 3.10.x | Logging |
-
-## 📁 Project Structure
+## Project Structure
 
 ```
 ecommerce-platform/
@@ -119,7 +104,7 @@ ecommerce-platform/
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Prerequisites
 
@@ -185,7 +170,7 @@ The API will be available at `http://localhost:5000`
 
 ---
 
-## 📡 API Endpoints
+## API Endpoints
 
 ### Authentication
 
@@ -272,7 +257,7 @@ The API will be available at `http://localhost:5000`
 
 ---
 
-## 🔐 Security Features
+## Security Features
 
 ### Payment Security
 - **PCI DSS Compliance**: Secure payment processing
@@ -295,7 +280,7 @@ The API will be available at `http://localhost:5000`
 
 ---
 
-## 📊 Database Schema
+## Database Schema
 
 ### Product Model
 ```javascript
@@ -385,7 +370,7 @@ The API will be available at `http://localhost:5000`
 
 ---
 
-## 🧪 Testing
+## Testing
 
 The project includes comprehensive test suites:
 
@@ -402,7 +387,7 @@ npm test -- --coverage
 
 ---
 
-## 📈 Monitoring & Logging
+## Monitoring & Logging
 
 ### Winston Logger Configuration
 - **Console**: Colored output for development
@@ -421,7 +406,7 @@ npm test -- --coverage
 
 ---
 
-## 🚀 Deployment
+## Deployment
 
 ### Environment Variables for Production
 
@@ -452,7 +437,7 @@ SMTP_PASSWORD=your-app-password
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome! Please follow these steps:
 
@@ -464,13 +449,13 @@ Contributions are welcome! Please follow these steps:
 
 ---
 
-## 📝 License
+## License
 
 Proprietary - All rights reserved.
 
 ---
 
-## 👨‍💻 Author
+## Author
 
 **Alakhdeep Singh**
 
