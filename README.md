@@ -5,7 +5,6 @@
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-blue)
 ![Sequelize](https://img.shields.io/badge/Sequelize-6.35-blue)
 ![Stripe](https://img.shields.io/badge/Stripe-14.5-purple)
-![License](https://img.shields.io/badge/License-MIT-blue)
 
 A production-ready e-commerce backend API with PostgreSQL, Sequelize ORM, Stripe payments, inventory management, and comprehensive analytics.
 
