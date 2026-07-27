@@ -1,5 +1,7 @@
 const { DataTypes } = require('sequelize');
 const sequelize = require('../config/database');
+const logger = require('../utils/logger');
+const sendEmail = require('../utils/sendEmail');
 
 /**
  * CURRICULUM COVERAGE:
@@ -79,6 +81,41 @@ const Product = sequelize.define('Product', {
     specifications: {
         type: DataTypes.JSONB,
         defaultValue: {}
+    },
+    variants: {
+        type: DataTypes.JSONB,
+        defaultValue: []
+    },
+    lowStockThreshold: {
+        type: DataTypes.INTEGER,
+        defaultValue: 10
+    },
+    barcode: {
+        type: DataTypes.STRING
+    },
+    weight: {
+        type: DataTypes.DECIMAL(10, 2),
+        validate: {
+            min: 0
+        }
+    },
+    dimensions: {
+        type: DataTypes.JSONB,
+        defaultValue: {
+            length: null,
+            width: null,
+            height: null
+        }
+    },
+    tags: {
+        type: DataTypes.ARRAY(DataTypes.STRING),
+        defaultValue: []
+    },
+    seoTitle: {
+        type: DataTypes.STRING
+    },
+    seoDescription: {
+        type: DataTypes.TEXT
     }
 }, {
     tableName: 'products',
@@ -86,7 +123,9 @@ const Product = sequelize.define('Product', {
         { fields: ['name'] },
         { fields: ['slug'] },
         { fields: ['price'] },
-        { fields: ['published'] }
+        { fields: ['published'] },
+        { fields: ['featured'] },
+        { fields: ['stock'] }
     ]
 });
 
@@ -97,6 +136,36 @@ Product.beforeValidate((product) => {
             .toLowerCase()
             .replace(/[^a-z0-9]+/g, '-')
             .replace(/(^-|-$)/g, '');
+    }
+});
+
+// Low stock alert hook
+Product.afterUpdate(async (product) => {
+    if (product.changed('stock') && product.stock <= product.lowStockThreshold) {
+        logger.warn(`Low stock alert for product: ${product.name}`, {
+            productId: product.id,
+            currentStock: product.stock,
+            threshold: product.lowStockThreshold
+        });
+
+        // Send email alert to admin
+        try {
+            await sendEmail({
+                email: process.env.ADMIN_EMAIL || 'admin@ecommerce.com',
+                subject: `⚠️ Low Stock Alert: ${product.name}`,
+                message: `
+                    Product ${product.name} is running low on stock.
+                    
+                    Current Stock: ${product.stock}
+                    Threshold: ${product.lowStockThreshold}
+                    SKU: ${product.sku}
+                    
+                    Please restock soon.
+                `
+            });
+        } catch (error) {
+            logger.error('Failed to send low stock alert email', { error: error.message });
+        }
     }
 });
 

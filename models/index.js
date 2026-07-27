@@ -12,6 +12,8 @@ const WebhookSubscription = require('./WebhookSubscription');
 const Subscription = require('./Subscription');
 const Campaign = require('./Campaign');
 const CustomerSegment = require('./CustomerSegment');
+const Wishlist = require('./Wishlist');
+const Discount = require('./Discount');
 
 /**
  * CURRICULUM COVERAGE:
@@ -70,6 +72,14 @@ Subscription.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 CustomerSegment.hasMany(Campaign, { foreignKey: 'segmentId', as: 'campaigns' });
 Campaign.belongsTo(CustomerSegment, { foreignKey: 'segmentId', as: 'segment' });
 
+// User - Wishlist (One-to-Many)
+User.hasMany(Wishlist, { foreignKey: 'userId', as: 'wishlistItems' });
+Wishlist.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
+// Product - Wishlist (One-to-Many)
+Product.hasMany(Wishlist, { foreignKey: 'productId', as: 'wishlistEntries' });
+Wishlist.belongsTo(Product, { foreignKey: 'productId', as: 'product' });
+
 module.exports = {
     sequelize,
     User,
@@ -84,5 +94,7 @@ module.exports = {
     WebhookSubscription,
     Subscription,
     Campaign,
-    CustomerSegment
+    CustomerSegment,
+    Wishlist,
+    Discount
 };

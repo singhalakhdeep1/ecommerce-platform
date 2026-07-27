@@ -17,6 +17,8 @@ const analyticsRoutes = require('./routes/analyticsRoutes');
 const subscriptionRoutes = require('./routes/subscriptionRoutes');
 const marketingRoutes = require('./routes/marketingRoutes');
 const integrationRoutes = require('./routes/integrationRoutes');
+const wishlistRoutes = require('./routes/wishlistRoutes');
+const discountRoutes = require('./routes/discountRoutes');
 
 const errorHandler = require('./middleware/errorHandler');
 const { sequelize } = require('./models');
@@ -83,6 +85,8 @@ app.use('/api/analytics', analyticsRoutes);
 app.use('/api/subscriptions', subscriptionRoutes);
 app.use('/api/marketing', marketingRoutes);
 app.use('/api/integrations', integrationRoutes);
+app.use('/api/wishlist', wishlistRoutes);
+app.use('/api/discounts', discountRoutes);
 
 // Health check
 app.get('/health', (req, res) => {
