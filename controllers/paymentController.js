@@ -6,8 +6,15 @@ const AppError = require('../utils/appError');
 const sendEmail = require('../utils/sendEmail');
 
 // PayPal Environment & Client Initialization - #1751-1800: PayPal API
-const clientId = process.env.PAYPAL_CLIENT_ID || 'mock-paypal-client-id';
-const clientSecret = process.env.PAYPAL_CLIENT_SECRET || 'mock-paypal-client-secret';
+// Fail loudly if credentials are absent — never fall back to dummy strings.
+const clientId = process.env.PAYPAL_CLIENT_ID;
+const clientSecret = process.env.PAYPAL_CLIENT_SECRET;
+if (!clientId || !clientSecret) {
+    throw new Error(
+        'PayPal credentials are not configured. ' +
+        'Set PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET environment variables.'
+    );
+}
 const environment = process.env.NODE_ENV === 'production'
     ? new paypal.core.LiveEnvironment(clientId, clientSecret)
     : new paypal.core.SandboxEnvironment(clientId, clientSecret);
