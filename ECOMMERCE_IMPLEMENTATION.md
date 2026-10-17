@@ -1,153 +1,68 @@
-# E-Commerce Platform - Implementation
+# E-Commerce Platform - API styles, search engines and PWA
 
 ## Overview
-This document describes the GraphQL, tRPC, Elasticsearch, Algolia, Meilisearch, and PWA integrations added to the E-Commerce Platform.
+How the GraphQL, tRPC, Elasticsearch, Algolia, Meilisearch and PWA pieces are implemented and wired in. All of them run on the same models and services as the REST API, so business rules (stock, ownership, auth) are identical across styles.
 
-## Technologies Added
+## Technologies
 
-### 1. GraphQL
-- Schema definitions for Products, Orders, Users
-- Query operations (get products, orders, users)
-- Mutation operations (create/update products, orders, users)
-- Type definitions
+### 1. GraphQL (`/graphql`)
+**File:** `src/graphql/schema.ts`, served with `graphql-http` in `src/app.ts`.
 
-### 2. tRPC
-- End-to-end type safety
-- Router with procedures
-- Product CRUD operations
-- Order management
-- User management
-- Cart operations
+- Types: Product (with Category and Variants), ProductPage, SearchResult, Review, User, Order (with items), Cart.
+- Queries: `products(search, categoryId, featured, page, limit)`, `product(id | slug)`, `categories`, `search(q)`, `reviews(productId)`, `me`, `myOrders`, `order(id)`, `cart`.
+- Mutations: `addToCart`, `updateCartItem`, `removeCartItem`, `updateProfile`.
+- Auth: the same `Authorization: Bearer <jwt>` header as REST; queries that need a user return a "Sign in required" error otherwise.
 
-### 3. Elasticsearch
-- Product indexing
-- Full-text search
-- Product CRUD operations
-- Bulk indexing
-- Index management
+```bash
+curl -X POST localhost:5000/graphql -H 'Content-Type: application/json' \
+  -d '{"query":"{ products(limit: 3) { total items { name price category { name } } } }"}'
+```
 
-### 4. Algolia
-- Real-time search
-- Product indexing
-- Search with filters
-- Index settings
-- Bulk operations
+### 2. tRPC (`/trpc`)
+**File:** `src/trpc/router.ts` (type `AppRouter` for TypeScript clients), mounted with the Express adapter.
 
-### 5. Meilisearch
-- Fast typo-tolerant search
-- Product indexing
-- Search with options
-- Index management
-- Settings configuration
+- `product.list`, `product.byId`, `product.setStock` (admin), `category.list`
+- `cart.get`, `cart.add`, `cart.update`, `cart.remove`
+- `order.mine`, `order.track`, `user.me`
+- Inputs are zod schemas; service errors map to tRPC codes (NOT_FOUND, CONFLICT, UNAUTHORIZED...).
+
+```bash
+curl "localhost:5000/trpc/product.list?input=%7B%22limit%22%3A3%7D"
+```
+
+### 3-5. Search engines
+**File:** `src/services/search/searchService.ts`; API in `src/routes/catalogTools.ts`.
+
+| Engine | When it is used | Notes |
+|---|---|---|
+| PostgreSQL full-text | Always available, default and fallback | Weighted tsvector (name > tags > description) with GIN index, `websearch_to_tsquery` plus prefix matching for search-as-you-type |
+| Elasticsearch | `ELASTICSEARCH_URL` set | English analyzer, fuzzy multi-match, price/stock/category filters, bulk indexing |
+| Algolia | `ALGOLIA_APP_ID` + `ALGOLIA_API_KEY` set | Searchable attributes, numeric filters, custom ranking |
+| Meilisearch | `MEILISEARCH_URL` set | Filterable/sortable attributes, typo tolerance |
+
+- `GET /api/search?q=&engine=&category=&minPrice=&maxPrice=&inStock=` uses `SEARCH_ENGINE` unless `engine` is given. If an external engine fails (or its circuit breaker is open) the request is answered by PostgreSQL, with `fallbackFrom` in the response.
+- Product create/update/delete, reviews (rating) and stock changes push the document to every configured external engine after commit.
+- `POST /api/search/reindex` (admin) rebuilds external indexes from PostgreSQL; `GET /api/search/engines` shows health.
+- Verified against Elasticsearch 8.17 (index, fuzzy search, fallback when stopped). Algolia and Meilisearch adapters are written to their current SDKs but were not run against live services.
 
 ### 6. PWA
-- Service Worker for offline support
-- Web App Manifest
-- Cache management
-- Installable experience
+**Files:** `frontend-test/public/sw.js`, `frontend-test/public/manifest.json`, `frontend-test/public/icons/*`
 
-## Files Created
-
-### Controllers
-- `controllers/graphqlController.js` - GraphQL schema and resolvers
-- `controllers/trpcController.js` - tRPC router
-- `controllers/elasticsearchController.js` - Elasticsearch client
-- `controllers/algoliaController.js` - Algolia client
-- `controllers/meilisearchController.js` - Meilisearch client
-
-### PWA
-- `frontend-test/public/sw.js` - Service Worker
-- `frontend-test/public/manifest.json` - Web App Manifest
-
-## Features
-
-### GraphQL Controller
-- Product queries (list, single)
-- Order queries (list, single)
-- User queries
-- Create product mutation
-- Create order mutation
-- Update user mutation
-
-### tRPC Controller
-- Product procedures (get, create, update, delete)
-- Order procedures (get, create, update status)
-- User procedures (get, update)
-- Cart procedures (get, add, remove)
-
-### Elasticsearch Controller
-- Index products
-- Search products with multi-match query
-- Get, update, delete products
-- Bulk index products
-- Create products index
-- Connection testing
-
-### Algolia Controller
-- Index products
-- Search products with filters
-- Get, update, delete products
-- Bulk index products
-- Update index settings
-- Clear index
-- Connection testing
-
-### Meilisearch Controller
-- Index products
-- Search products with options
-- Get, update, delete products
-- Bulk index products
-- Create/delete index
-- Update settings
-- Connection testing
-
-### PWA
-- Service Worker with caching
-- Installable manifest
-- Offline support
-- Cache versioning
-- Skip waiting for updates
-
-## Installation Required
-
-Add to `package.json`:
-```json
-{
-  "dependencies": {
-    "graphql": "^16.8.0",
-    "@trpc/server": "^11.0.0",
-    "@elastic/elasticsearch": "^8.11.0",
-    "algoliasearch": "^4.20.0",
-    "meilisearch": "^0.37.0"
-  }
-}
-```
-
-Run:
-```bash
-npm install
-```
+- The service worker is registered in production builds by `components/StoreProvider.tsx`.
+- Cache strategy: Next.js static assets and icons cache-first; page navigations network-first with the cached page (or the home page) as offline fallback; API calls are never cached, so prices, stock and carts are always live.
+- Installable manifest with 192 and 512 px icons. Service workers need HTTPS or localhost.
 
 ## Environment Variables
 
 ```env
-# Elasticsearch
+SEARCH_ENGINE=postgres            # postgres | elasticsearch | algolia | meilisearch
 ELASTICSEARCH_URL=http://localhost:9200
-ELASTICSEARCH_USERNAME=elastic
-ELASTICSEARCH_PASSWORD=changeme
-
-# Algolia
-ALGOLIA_APP_ID=your-app-id
-ALGOLIA_API_KEY=your-api-key
-
-# Meilisearch
+ELASTICSEARCH_USERNAME=
+ELASTICSEARCH_PASSWORD=
+ALGOLIA_APP_ID=
+ALGOLIA_API_KEY=
 MEILISEARCH_URL=http://localhost:7700
-MEILISEARCH_API_KEY=masterKey
+MEILISEARCH_API_KEY=
 ```
 
-## Notes
-- All code is written but packages are not installed (per user request)
-- Requires running instances of Elasticsearch, Algolia, and Meilisearch
-- PWA requires HTTPS or localhost for service worker registration
-- Service Worker caches static assets for offline support
-- Multiple search engines can be used simultaneously for redundancy
+`docker compose --profile search up` starts Elasticsearch and Meilisearch next to the API.

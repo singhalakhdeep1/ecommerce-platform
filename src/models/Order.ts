@@ -21,6 +21,7 @@ export class Order extends Model<InferAttributes<Order>, InferCreationAttributes
   declare id: CreationOptional<string>;
   declare orderNumber: CreationOptional<string>;
   declare userId: string;
+  declare orderType: CreationOptional<'standard' | 'express' | 'preorder'>;
   declare status: CreationOptional<OrderStatus>;
   declare subtotal: number;
   declare tax: CreationOptional<number>;
@@ -40,6 +41,8 @@ export class Order extends Model<InferAttributes<Order>, InferCreationAttributes
   declare shippingService: CreationOptional<string | null>;
   declare notes: CreationOptional<string | null>;
   declare trackingNumber: CreationOptional<string | null>;
+  declare labelUrl: CreationOptional<string | null>;
+  declare refundedAmount: CreationOptional<number>;
   declare idempotencyKey: CreationOptional<string | null>;
   declare fraudFlag: CreationOptional<boolean>;
   declare fraudScore: CreationOptional<number>;
@@ -51,6 +54,8 @@ export class Order extends Model<InferAttributes<Order>, InferCreationAttributes
   declare updatedAt: CreationOptional<Date>;
 
   declare items?: OrderItem[];
+  declare events?: OrderEvent[];
+  declare transactions?: PaymentTransaction[];
 }
 
 Order.init(
@@ -58,6 +63,7 @@ Order.init(
     id: uuidPk,
     orderNumber: { type: DataTypes.STRING(40), allowNull: false, unique: true },
     userId: { type: DataTypes.UUID, allowNull: false, references: { model: 'users', key: 'id' } },
+    orderType: { type: DataTypes.STRING(16), allowNull: false, defaultValue: 'standard' },
     status: { type: DataTypes.ENUM(...ORDER_STATUSES), allowNull: false, defaultValue: 'pending' },
     subtotal: money('subtotal', { min: 0 }),
     tax: money('tax', { defaultValue: 0 }),
@@ -77,6 +83,8 @@ Order.init(
     shippingService: { type: DataTypes.STRING(32) },
     notes: { type: DataTypes.TEXT },
     trackingNumber: { type: DataTypes.STRING(64) },
+    labelUrl: { type: DataTypes.STRING(2048) },
+    refundedAmount: money('refundedAmount', { defaultValue: 0 }),
     idempotencyKey: { type: DataTypes.STRING(64), unique: true },
     fraudFlag: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
     fraudScore: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },

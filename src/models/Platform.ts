@@ -160,6 +160,36 @@ Campaign.init(
   { sequelize, tableName: 'campaigns' },
 );
 
+/** One row per email a campaign sent; the token powers the open pixel and tracked click links. */
+export class CampaignRecipient extends Model<InferAttributes<CampaignRecipient>, InferCreationAttributes<CampaignRecipient>> {
+  declare id: CreationOptional<string>;
+  declare campaignId: string;
+  declare userId: CreationOptional<string | null>;
+  declare email: string;
+  declare token: string;
+  declare status: CreationOptional<'sent' | 'failed'>;
+  declare error: CreationOptional<string | null>;
+  declare sentAt: CreationOptional<Date>;
+  declare openedAt: CreationOptional<Date | null>;
+  declare clickedAt: CreationOptional<Date | null>;
+}
+
+CampaignRecipient.init(
+  {
+    id: uuidPk,
+    campaignId: { type: DataTypes.UUID, allowNull: false, references: { model: 'campaigns', key: 'id' }, onDelete: 'CASCADE' },
+    userId: { type: DataTypes.UUID, references: { model: 'users', key: 'id' }, onDelete: 'SET NULL' },
+    email: { type: DataTypes.STRING(255), allowNull: false },
+    token: { type: DataTypes.STRING(64), allowNull: false, unique: true },
+    status: { type: DataTypes.STRING(16), allowNull: false, defaultValue: 'sent' },
+    error: { type: DataTypes.TEXT },
+    sentAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+    openedAt: { type: DataTypes.DATE },
+    clickedAt: { type: DataTypes.DATE },
+  },
+  { sequelize, tableName: 'campaign_recipients', timestamps: false },
+);
+
 /* ---------- A/B testing ---------- */
 
 export class AbExperiment extends Model<InferAttributes<AbExperiment>, InferCreationAttributes<AbExperiment>> {

@@ -8,6 +8,7 @@ import {
   AbExperiment,
   AnalyticsEvent,
   Campaign,
+  CampaignRecipient,
   CustomerSegment,
   ProcessedWebhookEvent,
   SagaExecution,
@@ -67,6 +68,8 @@ WebhookSubscription.hasMany(WebhookDelivery, { foreignKey: 'subscriptionId', as:
 WebhookDelivery.belongsTo(WebhookSubscription, { foreignKey: 'subscriptionId', as: 'subscription' });
 CustomerSegment.hasMany(Campaign, { foreignKey: 'segmentId', as: 'campaigns' });
 Campaign.belongsTo(CustomerSegment, { foreignKey: 'segmentId', as: 'segment' });
+Campaign.hasMany(CampaignRecipient, { foreignKey: 'campaignId', as: 'recipients' });
+CampaignRecipient.belongsTo(Campaign, { foreignKey: 'campaignId', as: 'campaign' });
 AbExperiment.hasMany(AbAssignment, { foreignKey: 'experimentKey', as: 'assignments' });
 AbAssignment.belongsTo(AbExperiment, { foreignKey: 'experimentKey', as: 'experiment' });
 
@@ -76,6 +79,7 @@ export {
   AbExperiment,
   AnalyticsEvent,
   Campaign,
+  CampaignRecipient,
   Cart,
   CartItem,
   Category,

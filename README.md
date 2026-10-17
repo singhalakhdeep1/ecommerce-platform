@@ -1,472 +1,150 @@
-# E-Commerce Platform API
+# E-Commerce Platform
 
-An e-commerce backend API with PostgreSQL, Sequelize ORM, Stripe payments, inventory management, and analytics.
+A TypeScript e-commerce backend (Express + PostgreSQL + Redis) with a Next.js storefront and admin console. It covers catalog, guest and account carts, checkout with discounts, shipping and tax, Stripe / PayPal / sandbox payments, refunds, fulfilment and tracking, reviews, wishlists, memberships, analytics with A/B testing, email campaigns, webhooks and third-party integrations. REST, GraphQL and tRPC all sit on the same services.
 
-## Overview
+## What's inside
 
-This API handles online store operations including product management, shopping cart, order processing, payment integration, and customer analytics. Built with Node.js, Express, PostgreSQL, and Sequelize.
+| Area | Highlights |
+|---|---|
+| Catalog | Products with variants (own price/stock/SKU), two-level category tree, PostgreSQL full-text search with prefix matching, filters, sorting, pagination, related products, low-stock alerts |
+| Search | PostgreSQL FTS always on; Elasticsearch, Algolia and Meilisearch adapters with automatic sync and fallback to PostgreSQL |
+| Cart | Account carts plus guest carts (`X-Cart-Token`) that merge on login/registration; stock checked on every change; live price quote |
+| Checkout | Checkout saga (order + payment session, compensated on provider failure), Unit of Work transaction with row locks, order types (standard / express / pre-order), discount codes (percentage, fixed, free shipping, product/category scoped, global and per-customer limits), carrier rate cards (USPS/UPS/FedEx/DHL × ground/express/overnight, zones, free-shipping thresholds), destination tax (US states + ~45 countries), `Idempotency-Key` |
+| Payments | Strategy pattern: Stripe PaymentIntents + signed webhooks, PayPal Orders v2 (create/capture/refund), sandbox provider for local use; platform fee / seller payout recorded per charge; refund saga with optional restock; unpaid orders expire and release stock |
+| Fraud | Velocity rules in Redis (orders per user+IP, per device, failed payments), large orders, new accounts, country mismatch, blocklist; block or flag for review |
+| Fulfilment | Status lifecycle with allowed transitions, audit trail (`order_events`), tracking numbers or Shippo labels, delivery estimates, customer cancellation (auto-refund when paid) |
+| Customers | JWT auth with server-side revocation, profile and default address, password change, GDPR export and erasure, reviews (verified purchase, helpful votes), wishlist with move-to-cart, membership plans (free shipping; Stripe Billing or sandbox) |
+| Growth | Event tracking (guest session or user), funnel, cohorts, sales/product/customer/inventory reports, A/B experiments with sticky assignment and a two-proportion z-test, customer segments, email campaigns with measured open/click rates, abandoned-cart reminders |
+| Platform | Signed outgoing webhooks with retries, signed inbound fulfilment webhook, Mailchimp / Klaviyo / Shippo, background jobs with Redis locks |
+| HLD/LLD | Saga, sharding (analytics events), read replicas, distributed cache, capacity estimation, constraints analysis, repository, unit of work, connection pooling, indexing, rate limiting, idempotency, structured logging, retry/circuit breaker/timeout, strategy and factory patterns. See [HLD_LLD_IMPLEMENTATION.md](HLD_LLD_IMPLEMENTATION.md) |
+| Ops | Prometheus metrics, health/readiness probes, OpenAPI docs, Dockerfiles, docker compose, GitHub Actions CI |
 
-## Features
+## Tech stack
 
-- Product management with variants and categories
-- Shopping cart with guest and authenticated user support
-- Order processing lifecycle
-- Stripe and PayPal payment integration
-- Real-time stock tracking and low-stock alerts
-- Hierarchical category structure
-- Product reviews and ratings
-- Wishlist management
-- Discount and coupon system
-- Multiple shipping providers
-- Automated tax calculation
-- Subscription management
-- Sales analytics
-- Customer segmentation
-- Marketing campaigns
-- A/B testing
-- Conversion tracking
-- Inventory reports
-- PCI DSS compliant payment processing
-- Fraud detection
-- Rate limiting
-- Redis caching
-- Database indexing
-- Webhook support
+- **API:** Node.js 20+, TypeScript 5, Express 4, Sequelize 6 on PostgreSQL 14+ (umzug migrations with hand-written SQL), Redis 7 (ioredis), zod, JWT + bcrypt, Stripe SDK, PayPal REST, graphql + graphql-http, tRPC 11, Elasticsearch / Algolia / Meilisearch clients, winston, prom-client, Swagger UI
+- **Storefront + admin (`frontend-test/`):** Next.js 14 (App Router), React 18, TypeScript, Tailwind CSS, Stripe Elements, PWA service worker
 
-## Tech Stack
-
-- Node.js 18.x
-- Express.js 4.18.x
-- PostgreSQL 15.x
-- Sequelize 6.35.x
-- Stripe 14.5.x
-- PayPal SDK 1.0.x
-- Redis 7.x
-- JWT 9.0.x
-- Bcryptjs 2.4.x
-- Winston 3.10.x
-
-## Project Structure
+## Project structure
 
 ```
 ecommerce-platform/
-├── config/
-│   ├── database.js           # PostgreSQL configuration
-│   └── redis.js              # Redis configuration
-├── controllers/
-│   ├── authController.js     # Authentication logic
-│   ├── productController.js  # Product management
-│   ├── cartController.js     # Shopping cart logic
-│   ├── orderController.js    # Order processing
-│   ├── paymentController.js  # Payment handling
-│   ├── reviewController.js   # Review management
-│   └── analyticsController.js # Analytics logic
-├── middleware/
-│   ├── auth.js               # JWT verification
-│   └── errorHandler.js       # Error handling
-├── models/
-│   ├── User.js               # User schema
-│   ├── Product.js            # Product schema
-│   ├── Category.js           # Category schema
-│   ├── Cart.js               # Cart schema
-│   ├── Order.js              # Order schema
-│   ├── OrderItem.js          # Order item schema
-│   ├── Review.js             # Review schema
-│   ├── Discount.js            # Discount/coupon schema
-│   ├── Subscription.js       # Subscription schema
-│   ├── Campaign.js           # Marketing campaign schema
-│   ├── CustomerSegment.js    # Customer segmentation schema
-│   ├── AnalyticsEvent.js     # Analytics event schema
-│   └── index.js              # Model associations
-├── routes/
-│   ├── authRoutes.js         # Authentication endpoints
-│   ├── productRoutes.js      # Product endpoints
-│   ├── categoryRoutes.js     # Category endpoints
-│   ├── cartRoutes.js         # Cart endpoints
-│   ├── orderRoutes.js        # Order endpoints
-│   ├── paymentRoutes.js      # Payment endpoints
-│   ├── reviewRoutes.js       # Review endpoints
-│   ├── analyticsRoutes.js    # Analytics endpoints
-│   ├── subscriptionRoutes.js # Subscription endpoints
-│   ├── marketingRoutes.js    # Marketing endpoints
-│   └── integrationRoutes.js  # Third-party integrations
-├── utils/
-│   ├── logger.js             # Winston logger
-│   ├── validator.js         # Input validation
-│   ├── stripe.js             # Stripe utilities
-│   └── email.js              # Email service
-├── frontend-test/            # React test frontend
-├── .env.example              # Environment template
-├── .gitignore
-├── package.json
-└── server.js                 # Entry point
+├── src/
+│   ├── server.ts / app.ts           # bootstrap (migrations check, jobs, graceful shutdown) / Express app
+│   ├── config/                      # env parsing, Sequelize connection
+│   ├── db/                          # umzug runner + CLI, migrations 001-003, idempotent seed
+│   ├── models/                      # User, Category, Product, Cart, Order (+items, events, transactions), engagement, platform tables
+│   ├── middleware/                  # auth, validation (zod), errors, request context, rate limit, idempotency
+│   ├── routes/                      # REST endpoints
+│   ├── graphql/ trpc/ docs/         # GraphQL schema, tRPC router, OpenAPI document
+│   └── services/
+│       ├── commerce/                # cart, checkout/orders/payments/refunds, discounts, shipping, tax, memberships
+│       ├── analytics/               # event tracking + reports, A/B testing
+│       ├── marketing/ integrations/ notifications/ fraud/ search/
+│       ├── saga/ repository/ unitOfWork/ patterns/        # LLD patterns
+│       ├── caching/ rateLimiting/ idempotency/ errorHandling/ logging/
+│       ├── readReplica/ sharding/ connectionPool/ indexing/ capacityEstimation/ systemConstraints/
+│       ├── infra/kvStore.ts         # Redis or in-process store
+│       ├── metrics.ts, jobs.ts
+├── frontend-test/                   # Next.js storefront + admin console
+├── docker-compose.yml, Dockerfile, frontend-test/Dockerfile
+└── .github/workflows/ci.yml
 ```
 
----
+## Getting started
 
-## Getting Started
+### With Docker
 
-### Prerequisites
-
-- Node.js 18.x or higher
-- PostgreSQL 15.x (local or cloud)
-- Redis 7.x (for caching)
-- Stripe account (for payments)
-- npm or yarn package manager
-
-### Installation
-
-1. Clone the repository:
 ```bash
-git clone https://github.com/Alakhdeepsingh/ecommerce-platform.git
-cd ecommerce-platform
+docker compose up --build
 ```
 
-2. Install dependencies:
+Storefront http://localhost:3000, API http://localhost:5000 (docs at `/api-docs`). The API container runs migrations and the demo seed on start. `docker compose --profile search up` adds Elasticsearch and Meilisearch.
+
+### Without Docker
+
+Prerequisites: Node.js 20+, PostgreSQL 14+, optionally Redis 7.
+
 ```bash
 npm install
+cp .env.example .env          # set DATABASE_URL (and REDIS_URL if you have Redis)
+npm run migrate               # create the schema
+npm run seed                  # demo catalog, users, codes, segments, experiments
+npm run dev                   # API on http://localhost:5000
+
+cd frontend-test
+npm install
+cp .env.example .env.local    # NEXT_PUBLIC_API_URL=http://localhost:5000
+npm run dev                   # storefront on http://localhost:3099
 ```
 
-3. Configure environment variables:
-```bash
-cp .env.example .env
-```
+Seeded accounts: `admin@example.com / Admin123!` (admin, from `SEED_ADMIN_*`), `alice@example.com` and `bob@example.com` / `Customer123!`. Discount codes: `WELCOME10`, `SAVE20` (orders over $100), `FREESHIP`.
 
-Edit `.env` with your configuration:
-```env
-PORT=5000
-NODE_ENV=development
-DATABASE_URL=postgres://localhost:5432/ecommerce
-REDIS_URL=redis://localhost:6379
-JWT_SECRET=your-super-secret-jwt-key
-JWT_EXPIRE=7d
-STRIPE_SECRET_KEY=your-stripe-secret-key
-STRIPE_WEBHOOK_SECRET=your-stripe-webhook-secret
-PAYPAL_CLIENT_ID=your-paypal-client-id
-PAYPAL_CLIENT_SECRET=your-paypal-client-secret
-CLIENT_URL=http://localhost:3000
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_EMAIL=your-email@gmail.com
-SMTP_PASSWORD=your-app-password
-```
+Without a Stripe key the store uses the **sandbox payment provider**: at checkout pick `pm_card_visa` or `pm_card_mastercard` to succeed, `pm_card_chargeDeclined` or `pm_card_insufficientFunds` to see a decline. Set `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY` and `STRIPE_WEBHOOK_SECRET` to switch cards to Stripe (Stripe Elements in the storefront, `POST /api/payments/webhook` for events). PayPal appears at checkout when `PAYPAL_CLIENT_ID`/`PAYPAL_CLIENT_SECRET` are set. Without SMTP settings, emails are logged and shown in Admin → System.
 
-4. Run database migrations:
-```bash
-npm run migrate
-```
+### Scripts
 
-5. Seed database (optional):
-```bash
-npm run seed
-```
+| Command | What it does |
+|---|---|
+| `npm run dev` | API with reload (tsx) |
+| `npm run build` / `npm start` | compile to `dist/` / run compiled API |
+| `npm run typecheck` | `tsc --noEmit` |
+| `npm run migrate` / `migrate:down` / `migrate:status` | apply / revert last / list migrations (`migrate:prod` for `dist/`) |
+| `npm run migrate:shards` | create the analytics schema on every `DB_SHARDS` database |
+| `npm run seed` | idempotent demo data (`seed:prod` for `dist/`) |
 
-6. Start the development server:
-```bash
-npm run dev
-```
+## API
 
-The API will be available at `http://localhost:5000`
+Full list with auth levels: `GET /api-docs` (Swagger UI) or `/api-docs.json`. Responses are `{ success, data }`; errors are `{ success: false, error, details?, correlationId }`.
 
----
+| Area | Endpoints |
+|---|---|
+| Auth | `POST /api/auth/register`, `POST /api/auth/login`, `GET/PUT/DELETE /api/auth/me`, `GET /api/auth/me/export`, `PUT /api/auth/password`, `POST /api/auth/logout` |
+| Catalog | `GET /api/products`, `GET /api/products/:idOrSlug`, `GET /api/products/:id/reviews`, admin `POST/PUT/DELETE /api/products[/:id]`, `PATCH /api/products/:id/inventory`; `GET /api/categories[/:idOrSlug]`, admin `POST/PUT/DELETE /api/categories` |
+| Cart | `GET/DELETE /api/cart`, `POST /api/cart/items`, `PUT/DELETE /api/cart/items/:itemId`, `POST /api/cart/merge`, `GET /api/cart/quote` |
+| Orders | `POST /api/checkout` (saga), `POST /api/orders`, `GET /api/orders`, `GET /api/orders/:id`, `GET /api/orders/:id/track`, `POST /api/orders/:id/cancel`, admin `PATCH /api/orders/:id/status` |
+| Payments | `GET /api/payments/config`, `POST /api/payments/create-intent`, `POST /api/payments/confirm`, `POST /api/payments/webhook`, `POST /api/payments/paypal/create`, `POST /api/payments/paypal/capture`, admin `POST /api/payments/refund/:orderId` |
+| Engagement | `POST/PUT/DELETE /api/reviews[/:id]`, `POST /api/reviews/:id/helpful`; `GET/POST/PUT/DELETE /api/wishlist[/:id]`, `POST /api/wishlist/:id/move-to-cart`; `POST /api/discounts/validate` + admin CRUD; `GET /api/subscriptions/plans`, `GET/POST /api/subscriptions`, `POST /api/subscriptions/:id/cancel`, `.../resume`, `POST /api/subscriptions/webhook` |
+| Search & shipping | `GET /api/search`, `GET /api/search/suggest`, admin `GET /api/search/engines`, `POST /api/search/reindex`; `GET /api/shipping/carriers`, `GET /api/shipping/rates`, `POST /api/shipping/validate-address`, `GET /api/tax` |
+| Analytics | `POST /api/analytics/track`; admin `GET /api/analytics/{sales,products,customers,inventory,funnel,cohort,events}`; `GET /api/experiments`, `GET /api/experiments/:key/assignment`, `POST /api/experiments/:key/convert`, admin stats/CRUD |
+| Marketing | admin `/api/marketing/campaigns` (CRUD, `send`, `pause`), `/api/marketing/segments` (CRUD, `members`), `POST /api/marketing/abandoned-cart`, `GET /api/marketing/analytics`; public tracking `/api/marketing/t/:token/open.gif` and `/click` |
+| Integrations & webhooks | `POST /api/integrations/webhook` (signed), admin `GET /api/integrations/status`, `POST /api/integrations/{shippo,mailchimp,klaviyo}`; `GET/POST/PATCH/DELETE /api/webhooks`, deliveries, test ping, redeliver |
+| System | `GET /health`, `GET /ready`, `GET /metrics`; admin `/api/system/{health,capacity,constraints,indexes,shards,replicas,sagas,circuits,outbox,fraud/:userId}`, `POST /api/system/jobs/:name/run`, `POST /api/system/cache/flush` |
+| GraphQL / tRPC | `POST /graphql`, `/trpc/*` (see [ECOMMERCE_IMPLEMENTATION.md](ECOMMERCE_IMPLEMENTATION.md)) |
 
-## API Endpoints
+Request headers the API understands: `Authorization: Bearer <jwt>`, `X-Cart-Token` (guest cart), `X-Session-Id` (anonymous analytics / experiments), `Idempotency-Key` (checkout, orders, payment intents, refunds), `X-Correlation-Id`.
 
-### Authentication
+### Webhooks
 
-| Method | Endpoint | Description | Auth Required |
-|--------|----------|-------------|---------------|
-| POST | `/api/auth/register` | Register new user | No |
-| POST | `/api/auth/login` | Login user | No |
-| GET | `/api/auth/me` | Get current user | Yes |
-| POST | `/api/auth/logout` | Logout user | Yes |
+Outgoing events: `order.created`, `order.paid`, `order.status_changed`, `order.refunded` (customers receive their own orders' events) and `product.low_stock`, `review.created` (admins). Each POST carries `X-Webhook-Id`, `X-Webhook-Event`, `X-Webhook-Timestamp` and `X-Webhook-Signature: sha256=HMAC(secret, "<timestamp>.<body>")`. Failed deliveries are retried after 1, 2, 4 and 8 minutes.
 
-### Products
+The inbound fulfilment webhook expects `X-Timestamp` and `X-Signature: sha256=HMAC(INTEGRATION_WEBHOOK_SECRET, "<timestamp>.<raw body>")` and accepts `order.shipped` / `order.delivered`.
 
-| Method | Endpoint | Description | Auth Required |
-|--------|----------|-------------|---------------|
-| GET | `/api/products` | Get all products (paginated) | No |
-| GET | `/api/products/:id` | Get single product | No |
-| POST | `/api/products` | Create product | Yes (Admin) |
-| PUT | `/api/products/:id` | Update product | Yes (Admin) |
-| DELETE | `/api/products/:id` | Delete product | Yes (Admin) |
-| GET | `/api/products/:id/reviews` | Get product reviews | No |
+## Storefront and admin (`frontend-test/`)
 
-### Categories
+- **Shop:** home, catalog with category tree, price and stock filters and sorting, search suggestions, product pages with variants, reviews (write, sort, helpful votes) and related items, A/B-tested price display.
+- **Buying:** guest cart that follows you into your account, discount codes and live tax/shipping quote, checkout with carrier, speed and order type, payment by sandbox test card, Stripe Elements or PayPal redirect, order history, tracking timeline, cancellation, pay-again after a decline.
+- **Account:** wishlist, membership, profile and default address, password change, order webhooks, data export, account deletion.
+- **Admin (role `admin`):** dashboard (revenue, funnel, top products and customers, low stock, cohorts), orders (filters, fraud flags, status changes, shipping, refunds), products (CRUD, variants, stock), discount codes, marketing (segments, campaigns, open/click rates, abandoned carts), experiments (live stats and significance), system (dependencies, breakers, jobs, capacity, sagas, unused indexes, email outbox).
+- Installable PWA; the service worker never caches API responses.
 
-| Method | Endpoint | Description | Auth Required |
-|--------|----------|-------------|---------------|
-| GET | `/api/categories` | Get all categories | No |
-| GET | `/api/categories/:id` | Get single category | No |
-| POST | `/api/categories` | Create category | Yes (Admin) |
-| PUT | `/api/categories/:id` | Update category | Yes (Admin) |
-| DELETE | `/api/categories/:id` | Delete category | Yes (Admin) |
+## Security
 
-### Shopping Cart
+JWTs are revocable (token version on the user), passwords are bcrypt-hashed with strength rules, auth endpoints have their own rate limit, every input is validated with zod, roles are enforced per route, Stripe and inbound webhooks are signature-checked and deduplicated, outgoing webhook targets cannot point at private networks (unless `WEBHOOK_ALLOW_PRIVATE=true`), campaign click redirects stay on the storefront origin, helmet sets security headers, and card data never reaches the API.
 
-| Method | Endpoint | Description | Auth Required |
-|--------|----------|-------------|---------------|
-| GET | `/api/cart` | Get user cart | Yes |
-| POST | `/api/cart` | Add item to cart | Yes |
-| PUT | `/api/cart/:itemId` | Update cart item | Yes |
-| DELETE | `/api/cart/:itemId` | Remove item from cart | Yes |
-| DELETE | `/api/cart` | Clear cart | Yes |
+## Monitoring
 
-### Orders
+Prometheus metrics on `/metrics` (HTTP rate and latency per route, cache hit ratio, rate-limit rejections, orders, payments, revenue, circuit breaker state, DB pool). JSON logs in `logs/` with correlation ids; payment, security and audit events also in `logs/payments.log`.
 
-| Method | Endpoint | Description | Auth Required |
-|--------|----------|-------------|---------------|
-| GET | `/api/orders` | Get user orders | Yes |
-| POST | `/api/orders` | Create order | Yes |
-| GET | `/api/orders/:id` | Get order details | Yes |
-| PUT | `/api/orders/:id/status` | Update order status | Yes (Admin) |
-| POST | `/api/orders/:id/cancel` | Cancel order | Yes |
+## Verification status
 
-### Payments
+Verified locally against PostgreSQL 18 and Redis 8: 146 end-to-end API checks, repeated with two analytics shards plus a read replica, and with the in-process store plus Elasticsearch; Stripe flows against stripe-mock; migrations up/down/up and idempotent seed; 22 browser checks of the storefront and admin in Microsoft Edge; API and storefront typecheck, lint and production build.
 
-| Method | Endpoint | Description | Auth Required |
-|--------|----------|-------------|---------------|
-| POST | `/api/payments/create-intent` | Create payment intent | Yes |
-| POST | `/api/payments/confirm` | Confirm payment | Yes |
-| POST | `/api/payments/refund` | Refund payment | Yes (Admin) |
-| POST | `/api/payments/webhook` | Stripe webhook | No |
-
-### Reviews
-
-| Method | Endpoint | Description | Auth Required |
-|--------|----------|-------------|---------------|
-| POST | `/api/reviews` | Create review | Yes |
-| PUT | `/api/reviews/:id` | Update review | Yes |
-| DELETE | `/api/reviews/:id` | Delete review | Yes |
-
-### Analytics
-
-| Method | Endpoint | Description | Auth Required |
-|--------|----------|-------------|---------------|
-| GET | `/api/analytics/sales` | Get sales analytics | Yes (Admin) |
-| GET | `/api/analytics/products` | Get product analytics | Yes (Admin) |
-| GET | `/api/analytics/customers` | Get customer analytics | Yes (Admin) |
-| GET | `/api/analytics/inventory` | Get inventory reports | Yes (Admin) |
-
-### System
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/health` | Health check |
-| GET | `/api-docs` | Swagger documentation |
-
----
-
-## Security Features
-
-### Payment Security
-- **PCI DSS Compliance**: Secure payment processing
-- **Webhook Verification**: Stripe webhook signature verification
-- **Tokenization**: Payment token handling
-- **Fraud Detection**: Basic fraud detection patterns
-
-### API Security
-- **JWT Authentication**: Secure token-based authentication
-- **Rate Limiting**: API rate limiting per user
-- **Input Validation**: Comprehensive request validation
-- **SQL Injection Prevention**: Parameterized queries via Sequelize
-- **XSS Protection**: Helmet.js security headers
-
-### Data Protection
-- **Encryption**: Sensitive data encryption at rest
-- **Secure Passwords**: Bcrypt hashing with salt rounds
-- **Access Control**: Role-based access control (RBAC)
-- **Audit Logging**: Payment and order event logging
-
----
-
-## Database Schema
-
-### Product Model
-```javascript
-{
-  name: String (required),
-  description: Text,
-  price: Decimal (required),
-  comparePrice: Decimal,
-  sku: String (unique),
-  barcode: String,
-  quantity: Number (default: 0),
-  lowStockThreshold: Number,
-  category: ObjectId (ref: Category),
-  images: [String],
-  variants: [{
-    name: String,
-    options: [String],
-    price: Decimal,
-    quantity: Number
-  }],
-  attributes: Object,
-  isActive: Boolean (default: true),
-  isFeatured: Boolean (default: false),
-  weight: Number,
-  dimensions: { length: Number, width: Number, height: Number },
-  tags: [String],
-  seoTitle: String,
-  seoDescription: String,
-  createdAt: Date,
-  updatedAt: Date
-}
-```
-
-### Order Model
-```javascript
-{
-  user: ObjectId (ref: User),
-  orderNumber: String (unique),
-  status: String (enum: ['pending', 'processing', 'shipped', 'delivered', 'cancelled']),
-  items: [{
-    product: ObjectId (ref: Product),
-    quantity: Number,
-    price: Decimal,
-    name: String,
-    image: String
-  }],
-  subtotal: Decimal,
-  tax: Decimal,
-  shipping: Decimal,
-  discount: Decimal,
-  total: Decimal,
-  shippingAddress: {
-    name: String,
-    address: String,
-    city: String,
-    state: String,
-    zip: String,
-    country: String
-  },
-  billingAddress: Object,
-  paymentMethod: String,
-  paymentStatus: String,
-  paymentId: String,
-  trackingNumber: String,
-  notes: String,
-  createdAt: Date,
-  updatedAt: Date
-}
-```
-
-### Review Model
-```javascript
-{
-  user: ObjectId (ref: User),
-  product: ObjectId (ref: Product),
-  rating: Number (1-5),
-  title: String,
-  comment: Text,
-  images: [String],
-  isVerified: Boolean (default: false),
-  isApproved: Boolean (default: true),
-  helpful: Number (default: 0),
-  createdAt: Date,
-  updatedAt: Date
-}
-```
-
----
-
-## Testing
-
-The project includes comprehensive test suites:
-
-- **Product Tests**: Product CRUD, search, filtering
-- **Cart Tests**: Add, update, remove items
-- **Order Tests**: Order creation, status updates
-- **Payment Tests**: Stripe integration, webhooks
-- **Analytics Tests**: Sales reports, customer analytics
-
-Run tests with coverage:
-```bash
-npm test -- --coverage
-```
-
----
-
-## Monitoring & Logging
-
-### Winston Logger Configuration
-- **Console**: Colored output for development
-- **File**: Combined logs in `logs/combined.log`
-- **Error File**: Error-specific logs in `logs/error.log`
-- **Payment File**: Payment-specific logs in `logs/payments.log`
-- **Log Levels**: error, warn, info, http, debug
-
-### Metrics Tracked
-- Sales revenue and trends
-- Order conversion rates
-- Product performance
-- Customer acquisition
-- Inventory turnover
-- Payment success rates
-
----
-
-## Deployment
-
-### Environment Variables for Production
-
-```env
-NODE_ENV=production
-PORT=5000
-DATABASE_URL=postgres://user:pass@host:5432/ecommerce
-REDIS_URL=redis://your-redis-instance:6379
-JWT_SECRET=your-production-secret-key
-JWT_EXPIRE=7d
-STRIPE_SECRET_KEY=your-stripe-secret-key
-STRIPE_WEBHOOK_SECRET=your-stripe-webhook-secret
-PAYPAL_CLIENT_ID=your-paypal-client-id
-PAYPAL_CLIENT_SECRET=your-paypal-client-secret
-CLIENT_URL=https://yourdomain.com
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_EMAIL=your-email@gmail.com
-SMTP_PASSWORD=your-app-password
-```
-
-### Deployment Platforms
-
-- **Heroku**: Ready for Heroku deployment with PostgreSQL add-on
-- **Railway**: Compatible with Railway platform
-- **AWS**: Can be deployed to EC2 with RDS PostgreSQL
-- **DigitalOcean**: Compatible with App Platform with managed databases
-
----
-
-## Contributing
-
-Contributions are welcome! Please follow these steps:
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
----
+Not verified on this machine: Docker images and compose (no Docker daemon), live Stripe / PayPal / Shippo / Mailchimp / Klaviyo accounts, Algolia and Meilisearch, real streaming replication. Tax uses base rate tables (no county/city surcharges) and shipping uses store rate cards; live carrier rates and labels need Shippo.
 
 ## License
 
 Proprietary - All rights reserved.
 
----
-
 ## Author
 
-**Alakhdeep Singh**
-
-- GitHub: [@Alakhdeepsingh](https://github.com/Alakhdeepsingh)
-- LinkedIn: [Alakhdeep Singh](https://linkedin.com/in/alakhdeepsingh)
-
----
-
-## 🙏 Acknowledgments
-
-- Built following e-commerce best practices
-- Payment integration following Stripe documentation
-- Security patterns from OWASP guidelines
-- Inspired by industry-standard e-commerce platforms like Shopify
+**Alakhdeep Singh** - [GitHub](https://github.com/Alakhdeepsingh) · [LinkedIn](https://linkedin.com/in/alakhdeepsingh)

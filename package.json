@@ -17,6 +17,7 @@
     "migrate:prod": "node dist/db/cli.js up",
     "seed": "tsx src/db/cli.ts seed",
     "seed:prod": "node dist/db/cli.js seed",
+    "migrate:shards": "tsx src/db/cli.ts shards",
     "test": "node --test tests/smoke.test.cjs"
   },
   "dependencies": {

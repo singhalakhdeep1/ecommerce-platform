@@ -30,7 +30,10 @@ export const env = {
   isProduction: nodeEnv === 'production',
   isTest: nodeEnv === 'test',
   port: int(process.env.PORT, 5000),
-  clientUrl: process.env.CLIENT_URL ?? 'http://localhost:3000',
+  /** First CLIENT_URL entry: the storefront used in emails, redirects and PayPal return URLs. */
+  clientUrl: list(process.env.CLIENT_URL)[0] ?? 'http://localhost:3000',
+  /** Every CLIENT_URL entry is allowed by CORS. */
+  clientOrigins: list(process.env.CLIENT_URL).length ? list(process.env.CLIENT_URL) : ['http://localhost:3000'],
   logLevel: process.env.LOG_LEVEL ?? (nodeEnv === 'production' ? 'info' : 'debug'),
 
   db: {

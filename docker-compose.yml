@@ -1,0 +1,76 @@
+# Local stack: PostgreSQL, Redis, API (migrates + seeds on start) and the storefront.
+#   docker compose up --build            -> storefront http://localhost:3000, API http://localhost:5000
+#   docker compose --profile search up   -> also Elasticsearch + Meilisearch (set SEARCH_ENGINE to use one)
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ecommerce
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports: ['5432:5432']
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d ecommerce']
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports: ['6379:6379']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      retries: 10
+
+  api:
+    build: .
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/ecommerce
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-compose-local-secret-change-me-please}
+      NODE_ENV: ${NODE_ENV:-development}
+      CLIENT_URL: http://localhost:3000
+      PUBLIC_API_URL: http://localhost:5000
+      DB_AUTO_MIGRATE: 'true'
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      PAYPAL_CLIENT_ID: ${PAYPAL_CLIENT_ID:-}
+      PAYPAL_CLIENT_SECRET: ${PAYPAL_CLIENT_SECRET:-}
+      ELASTICSEARCH_URL: ${ELASTICSEARCH_URL:-}
+      MEILISEARCH_URL: ${MEILISEARCH_URL:-}
+      SEARCH_ENGINE: ${SEARCH_ENGINE:-postgres}
+    # Seed demo data once (idempotent), then start.
+    command: sh -c "node dist/db/cli.js up && node dist/db/cli.js seed && node dist/server.js"
+    ports: ['5000:5000']
+
+  web:
+    build:
+      context: ./frontend-test
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:5000
+    depends_on: [api]
+    ports: ['3000:3000']
+
+  elasticsearch:
+    profiles: [search]
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: 'false'
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    ports: ['9200:9200']
+
+  meilisearch:
+    profiles: [search]
+    image: getmeili/meilisearch:v1.11
+    environment:
+      MEILI_MASTER_KEY: ${MEILISEARCH_API_KEY:-local-master-key-123}
+    ports: ['7700:7700']
+
+volumes:
+  pgdata:

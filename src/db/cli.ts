@@ -2,6 +2,8 @@ import { sequelize } from '../config/database';
 import { logger } from '../utils/logger';
 import { seedAll } from './seeders';
 import { umzug } from './umzug';
+import { sharding } from '../services/sharding/databaseShardingService';
+import { connectionPool } from '../services/connectionPool/connectionPoolService';
 
 /** `npm run migrate` / `migrate:down` / `migrate:status` / `seed` */
 async function main(): Promise<void> {
@@ -27,13 +29,18 @@ async function main(): Promise<void> {
     case 'seed':
       await seedAll();
       break;
+    case 'shards': {
+      if (!sharding.enabled) throw new Error('DB_SHARDS is not configured');
+      logger.info(`Shards migrated: ${(await sharding.migrateShards()).join(', ')}`);
+      break;
+    }
     default:
-      throw new Error(`Unknown command "${command}" (use up | down | status | seed)`);
+      throw new Error(`Unknown command "${command}" (use up | down | status | seed | shards)`);
   }
 }
 
 main()
-  .then(() => sequelize.close())
+  .then(() => Promise.all([sequelize.close(), connectionPool.clearAllConnections()]))
   .catch(async (error) => {
     logger.error('Database command failed', { message: error instanceof Error ? error.message : String(error) });
     await sequelize.close().catch(() => undefined);

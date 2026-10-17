@@ -1,671 +1,197 @@
 # E-commerce Platform - HLD/LLD Implementation Guide
 
 ## Overview
-This document provides comprehensive documentation for all High-Level Design (HLD) and Low-Level Design (LLD) patterns implemented in the E-commerce Platform Node.js application.
+This document maps every High-Level Design (HLD) and Low-Level Design (LLD) topic of the platform to the TypeScript code that implements it, and explains where it is used in a real request path. The datastore is PostgreSQL (the original draft of this guide used MongoDB examples; the implementation is PostgreSQL + Sequelize throughout), with Redis as the shared store for caching, rate limiting, idempotency and counters.
+
+Everything listed here was exercised against a real PostgreSQL 18 and Redis 8 server (plus Elasticsearch 8.17 and stripe-mock for those adapters), see "Verification" at the end.
 
 ## Implemented Topics
 
 ### HLD Topics (High-Level Design)
 
 #### 1. Saga Pattern
-**Location:** `services/saga/sagaManager.js`
+**Location:** `src/services/saga/sagaManager.ts` (used by `src/services/commerce/orderService.ts`)
 
-**Description:** Implements the Saga pattern for managing distributed transactions with compensation logic. Used for complex order workflows that span multiple services.
+**Description:** Orchestrated sagas with compensation. Every run is persisted in `saga_executions` (completed steps, compensated steps, failing step, error) and listed on `GET /api/system/sagas`.
 
-**Key Features:**
-- Execute saga with compensation steps
-- Automatic rollback on failure
-- Execution tracking and monitoring
-- Async/await support
-- Execution history management
+**Where it runs:**
+- **Checkout** (`POST /api/checkout`): `PlaceOrder` (reserve stock, create order, redeem discount) -> `CreatePaymentSession` (Stripe PaymentIntent / PayPal order / sandbox intent). If the provider call fails, `PlaceOrder` is compensated: the order is cancelled, stock and the discount use are released.
+- **Refund** (`POST /api/payments/refund/:orderId`): `Restock` -> `ProviderRefund` -> `RecordRefund`. If the provider rejects the refund, the restock is compensated.
 
-**Usage Example:**
-```javascript
-const sagaDefinition = {
-  name: 'OrderProcessing',
-  steps: [
-    {
-      name: 'ValidateOrder',
-      execute: async (context) => validateOrder(context),
-      compensate: async (context) => invalidateOrder(context)
-    },
-    {
-      name: 'ProcessPayment',
-      execute: async (context) => processPayment(context),
-      compensate: async (context) => refundPayment(context)
-    }
-  ]
-};
-
-const result = await sagaManager.execute(sagaDefinition, initialContext);
+```ts
+const result = await sagaManager.execute(
+  {
+    name: 'Checkout',
+    steps: [
+      { name: 'PlaceOrder', execute: async (c) => { c.order = await placeOrder(input); }, compensate: async (c) => cancelUnpaidOrder(c.order!.id, null, 'Payment could not be started') },
+      { name: 'CreatePaymentSession', execute: async (c) => { c.payment = await startPayment(c.order!, user); } },
+    ],
+  },
+  ctx,
+);
 ```
 
 #### 2. Database Sharding
-**Location:** `services/sharding/databaseShardingService.js`
+**Location:** `src/services/sharding/databaseShardingService.ts`
 
-**Description:** Implements database sharding by region and customer segment for horizontal scaling. Uses consistent hashing for even distribution.
+**Description:** The analytics event stream (the highest-volume, append-only table) can be split across PostgreSQL shards. Keys (customer id, or session id for guests) are placed with consistent hashing on a ring of virtual nodes (100 per unit of weight), so adding a shard moves only about 1/N of the keys. Reports fan out to every shard and merge (`executeOnAllShards`); because the subject is the shard key, per-shard distinct counts can be summed.
 
-**Key Features:**
-- Shard by region (US, EU, APAC)
-- Shard by customer segment
-- Consistent hashing for even distribution
-- Shard health monitoring
-- Cross-shard query support
+**Configuration:** `DB_SHARDS=shard_a=postgres://...,shard_b=postgres://...`, then `npm run migrate:shards` (or `POST /api/system/shards/migrate`) to create the shard schema. Health and an optional key-distribution sample: `GET /api/system/shards?sample=10000`.
 
-**Usage Example:**
-```javascript
-const shards = [
-  { id: 'shard_us_premium', connectionString: 'mongodb://...', shardType: 'Premium', weight: 1 },
-  { id: 'shard_eu_standard', connectionString: 'mongodb://...', shardType: 'Standard', weight: 1 }
-];
-
-const shardingService = new DatabaseShardingService(shards);
-
-// Get shard for customer
-const shardId = shardingService.getShardIdByCustomer(customerId);
-
-// Execute on specific shard
-const result = await shardingService.executeOnShard(shardId, async (client) => {
-  return await queryCustomer(client, customerId);
-});
-
-// Get shard health
-const health = await shardingService.getShardHealth();
+```ts
+const shardId = sharding.getShardIdByCustomer(userId);
+await sharding.executeOnShard(shardId, (db) => db.query('INSERT INTO analytics_events ...'));
+const perShard = await sharding.executeOnAllShards((db) => db.query('SELECT ... GROUP BY event_type'));
 ```
+
+`getShardId(region, segment)` routes by region/segment when shard ids carry those tokens (e.g. `us_premium`), otherwise it hashes the pair.
 
 #### 3. Read Replicas
-**Location:** `services/readReplica/readReplicaService.js`
+**Location:** `src/services/readReplica/readReplicaService.ts`
 
-**Description:** Implements read replica routing for load distribution. Routes read queries to replica databases while writes go to primary.
+**Description:** Analytics and report queries (`src/services/analytics/analyticsService.ts`) run on PostgreSQL streaming replicas, chosen at random among healthy ones; writes always go to the primary. A health check every 15 s reads `pg_last_xact_replay_timestamp()` and takes a replica out of rotation when it lags more than `DB_REPLICA_MAX_LAG_SECONDS` or stops answering. A failed replica read is retried on the primary. With no replicas configured, reads use the primary.
 
-**Key Features:**
-- Random replica selection
-- Region-aware routing
-- Replication lag monitoring
-- Automatic failover to primary
-- Health checking
-
-**Usage Example:**
-```javascript
-const replicas = [
-  { id: 'replica_1', connectionString: 'mongodb://...', region: 'us-east-1' },
-  { id: 'replica_2', connectionString: 'mongodb://...', region: 'us-west-1' }
-];
-
-const readReplicaService = new ReadReplicaService(primaryConn, replicas);
-
-// Get read replica
-const replica = readReplicaService.getReadReplica();
-
-// Execute read operation
-const result = await readReplicaService.executeRead(async (replica) => {
-  return await queryProduct(replica, productId);
-});
-
-// Check replica lag
-const lag = await readReplicaService.getReplicaLag();
-```
+**Configuration:** `DB_READ_REPLICAS=postgres://...` (optionally `region|postgres://...` for `getReplicaByRegion`). Lag: `GET /api/system/replicas`.
 
 #### 4. Distributed Caching Coherency
-**Location:** `services/caching/distributedCacheService.js`
+**Location:** `src/services/caching/distributedCacheService.ts` on top of `src/services/infra/kvStore.ts`
 
-**Description:** Implements distributed caching with cache-aside pattern. Manages cache coherency across multiple instances using Redis.
+**Description:** Cache-aside over Redis, so all API instances share one cache. Product lists, product detail pages and the category tree are cached; every product, category, review, stock or order change invalidates `products:*` / `categories:*` with SCAN (never `KEYS`). Concurrent misses for the same key share one database query (stampede guard). Hit/miss counts are exported as `ecommerce_cache_requests_total`. Without `REDIS_URL` an in-process store is used (single instance only); if Redis fails mid-request, the call degrades to the in-process store instead of failing.
 
-**Key Features:**
-- Cache-aside pattern
-- Distributed cache with Redis
-- Automatic expiration
-- Pattern-based invalidation
-- JSON serialization
-
-**Usage Example:**
-```javascript
-const cacheService = new DistributedCacheService(redisClient, {
-  defaultExpiration: 1800,
-  keyPrefix: 'ecommerce:'
-});
-
-// Get from cache
-const product = await cacheService.get('product:123');
-
-// Set in cache
-await cacheService.set('product:123', product, 3600);
-
-// Get or set pattern
-const product = await cacheService.getOrSet('product:123', async () => {
-  return await productService.getProduct('123');
-}, 3600);
-
-// Invalidate pattern
-await cacheService.invalidatePattern('product:*');
+```ts
+const data = await cache.getOrSet(`products:detail:${slug}`, () => loadProduct(slug), 60);
+await cache.invalidatePattern('products:*');
 ```
 
 #### 5. Capacity Estimation
-**Location:** `services/capacityEstimation/capacityEstimationService.js`
+**Location:** `src/services/capacityEstimation/capacityEstimationService.ts`
 
-**Description:** Calculates resource requirements for scaling e-commerce operations based on transaction volume.
-
-**Key Features:**
-- Database capacity estimation
-- Application server capacity estimation
-- Cache capacity estimation
-- Comprehensive capacity reports
-- AWS instance type recommendations
-
-**Usage Example:**
-```javascript
-const capacityService = new CapacityEstimationService({
-  coresPerServer: 4,
-  memoryPerServerGB: 16,
-  redisMemoryPerNodeGB: 8
-});
-
-const volume = {
-  dailyTransactions: 100000,
-  productCount: 50000,
-  customerCount: 100000
-};
-
-const report = capacityService.generateCapacityReport(volume);
-
-console.log(`Total Storage: ${report.databaseCapacity.totalStorageTB} TB`);
-console.log(`Server Count: ${report.applicationCapacity.serverCount}`);
-console.log(`Redis Nodes: ${report.cacheCapacity.redisNodes}`);
-```
+**Description:** Storage, IOPS, CPU/server count, bandwidth and Redis memory estimates. `GET /api/system/capacity` feeds it the live volume (orders per day over the last 30 days, product and customer counts); query parameters (`dailyTransactions`, `productCount`, `customerCount`) model a hypothetical volume. Recommendations point at the switches this codebase actually has (shards, replicas, Redis Cluster, CDN).
 
 #### 6. System Constraints Analysis
-**Location:** `services/systemConstraints/systemConstraintsAnalysisService.js`
+**Location:** `src/services/systemConstraints/systemConstraintsAnalysisService.ts`, measurements in `src/middleware/requestContext.ts`
 
-**Description:** Analyzes system constraints and compliance requirements for e-commerce operations.
-
-**Key Features:**
-- Latency constraints analysis
-- Throughput constraints analysis
-- Availability constraints analysis
-- Security constraints analysis
-- Compliance constraints analysis
-- Data constraints analysis
-- Compliance scoring
-
-**Usage Example:**
-```javascript
-const constraintsService = new SystemConstraintsAnalysisService({
-  dataRetentionYears: 7,
-  requireEncryption: true,
-  requireAuditLogging: true
-});
-
-const requirements = {
-  targetLatencyMs: 200,
-  currentLatencyMs: 150,
-  targetTPS: 1000,
-  currentTPS: 800,
-  targetUptime: 99.9,
-  currentUptime: 99.95
-};
-
-const analysis = constraintsService.analyzeConstraints(requirements);
-const report = constraintsService.generateComplianceReport(requirements);
-
-console.log(`Compliance Score: ${report.complianceScore}/100`);
-```
+**Description:** `GET /api/system/constraints?targetLatencyMs=200&targetTPS=50&targetUptime=99.9` compares targets with what the API measured over the last 5 minutes (average and p95 latency, requests per second, share of non-5xx responses) and lists the security and compliance controls that are really implemented (bcrypt, revocable JWTs, roles, rate limits, audit log, no card data stored, data export and erasure endpoints), with a compliance score.
 
 ### LLD Topics (Low-Level Design)
 
 #### 1. Repository Pattern
-**Location:** `services/repository/repository.js`
+**Location:** `src/services/repository/repository.ts`
 
-**Description:** Generic repository implementation for data access abstraction with Unit of Work support.
+**Description:** Generic repository over a Sequelize model: `findById` (optionally `SELECT ... FOR UPDATE`), `findWhere`, `findSingle`, `exists`, `count`, `create`, `bulkCreate`, `update`, `delete`, `paginate` (offset, capped at 100 per page) and `cursorPaginate` (keyset on `(createdAt, id)`, opaque base64url cursor). Used by the product, order, review and discount listings and by every Unit of Work.
 
-**Key Features:**
-- Generic repository interface
-- CRUD operations
-- Query with filtering
-- Pagination support
-- Cursor-based pagination
-- Mongoose integration
-
-**Usage Example:**
-```javascript
-const productRepo = new Repository(Product);
-
-// Get by ID
-const product = await productRepo.findById(productId);
-
-// Find with conditions
-const products = await productRepo.findWhere({ category: 'Electronics' });
-
-// Check existence
-const exists = await productRepo.exists({ sku: 'SKU-123' });
-
-// Create
-const product = await productRepo.create({ name: 'Product', price: 100 });
-
-// Update
-await productRepo.update(product, { price: 150 });
-
-// Delete
-await productRepo.delete(product);
-
-// Paginate
-const result = await productRepo.paginate(1, 20, { category: 'Electronics' });
-
-// Cursor pagination
-const result = await productRepo.cursorPaginate(null, 20);
+```ts
+const page = await new Repository(Product).paginate(1, 20, { where: { published: true } });
+const next = await new Repository(Order).cursorPaginate(cursor, 20, { userId });
 ```
 
 #### 2. Unit of Work Pattern
-**Location:** `services/unitOfWork/unitOfWork.js`
+**Location:** `src/services/unitOfWork/unitOfWork.ts`
 
-**Description:** Manages transactions and repository coordination. Ensures atomic operations across multiple repositories.
+**Description:** One database transaction shared by all repositories it hands out; commits when the callback resolves, rolls back when it throws. `afterCommit` hooks run side effects (emails, webhooks, velocity counters, cache invalidation) only once the data is durable. Checkout, payment capture, cancellation, refunds and preorder release all run in a Unit of Work.
 
-**Key Features:**
-- Transaction management
-- Repository coordination
-- Automatic rollback on failure
-- Commit/rollback operations
-
-**Usage Example:**
-```javascript
-const uow = new UnitOfWork();
-
-await uow.beginTransaction(async () => {
-  const productRepo = uow.repository(Product);
-  const orderRepo = uow.repository(Order);
-
-  const product = await productRepo.findById(productId);
-  product.stock -= quantity;
-  await productRepo.update(product);
-
-  const order = await orderRepo.create({
-    productId,
-    quantity,
-    customerId
-  });
+```ts
+await UnitOfWork.run(async (uow) => {
+  const order = await uow.repository(Order).create({ ... });
+  await uow.repository(OrderItem).bulkCreate(items);
+  uow.afterCommit(() => dispatch('order.created', { orderId: order.id }, userId));
 });
 ```
 
 #### 3. Connection Pooling
-**Location:** `services/connectionPool/connectionPoolService.js`
+**Location:** `src/services/connectionPool/connectionPoolService.ts`
 
-**Description:** Optimizes database connection management for high concurrency with custom connection pool.
-
-**Key Features:**
-- Custom connection pool
-- Connection reuse
-- Pool size management
-- Idle connection cleanup
-- Health checking
-- Statistics tracking
-
-**Usage Example:**
-```javascript
-const poolService = new ConnectionPoolService({
-  maxPoolSize: 100,
-  connectionLifetime: 1800000
-});
-
-// Get connection
-const connection = await poolService.getConnection(connectionString);
-
-// Use connection
-// ... perform operations ...
-
-// Return connection
-poolService.returnConnection(connectionString);
-
-// Get statistics
-const stats = poolService.getStatistics();
-
-// Cleanup idle connections
-poolService.cleanupIdleConnections();
-```
+**Description:** The primary uses the Sequelize/pg pool (`DB_POOL_MAX`). Read replicas and shards get their clients from `ConnectionPoolService`, which keeps one pooled client per connection string, closes clients idle longer than `CONNECTION_POOL_LIFETIME`, caps the number of clients (`CONNECTION_POOL_MAX_SIZE`) and reports pool sizes, in-use, idle and waiting counts (`GET /api/system/health`, Prometheus gauge `ecommerce_db_pool_connections`). Connection strings are reported without credentials.
 
 #### 4. Database Indexing
-**Location:** `services/indexing/databaseIndexingService.js`
+**Location:** `src/db/migrations/002-indexes-and-search.ts`, `src/services/indexing/databaseIndexingService.ts`
 
-**Description:** Manages composite indexes for e-commerce query optimization. Creates optimized indexes for e-commerce operations.
-
-**Key Features:**
-- Composite index creation
-- Index management
-- Index rebuilding
-- MongoDB-specific queries
-- Index usage tracking
-
-**Usage Example:**
-```javascript
-const indexingService = new DatabaseIndexingService(db);
-
-// Create all e-commerce indexes
-await indexingService.createEcommerceIndexes();
-
-// Create specific index
-await indexingService.createIndex({
-  tableName: 'products',
-  indexName: 'IX_Products_Category_Price',
-  columns: ['category', 'price'],
-  isUnique: false
-});
-
-// Drop index
-await indexingService.dropIndex('IX_Products_Category_Price', 'products');
-
-// Rebuild all indexes
-await indexingService.rebuildIndexes();
-```
+**Description:** Migration 002 creates the composite and partial indexes for the queries the API runs (catalog filters, a customer's order history, admin status queues, pending webhook deliveries, active discounts...) plus a weighted `tsvector` with a GIN index for full-text search. The indexing service lists indexes with their scan counts and sizes, finds never-used ones, and creates / drops / rebuilds indexes `CONCURRENTLY` (identifiers are validated; admin only): `GET /api/system/indexes`, `GET /api/system/indexes/unused`, `POST /api/system/indexes`, `DELETE /api/system/indexes/:name`, `POST /api/system/indexes/rebuild`.
 
 #### 5. API Rate Limiting
-**Location:** `services/rateLimiting/rateLimitingService.js`
+**Location:** `src/services/rateLimiting/rateLimitingService.ts`, `src/middleware/rateLimit.ts`
 
-**Description:** Token bucket algorithm for API rate limiting. Prevents abuse and ensures fair usage.
-
-**Key Features:**
-- Token bucket algorithm
-- Per-key rate limiting
-- Configurable bucket capacity
-- Configurable refill rate
-- Statistics tracking
-- Automatic cleanup
-
-**Usage Example:**
-```javascript
-const rateLimitService = new RateLimitingService({
-  bucketCapacity: 100,
-  refillRate: 1.0
-});
-
-// Check if request is allowed
-const key = `user:${userId}`;
-if (rateLimitService.isAllowed(key, 1)) {
-  // Process request
-} else {
-  // Return 429 Too Many Requests
-}
-
-// Get remaining tokens
-const remaining = rateLimitService.getRemainingTokens(key);
-
-// Get time until refill
-const timeToRefill = rateLimitService.getTimeUntilRefill(key);
-
-// Reset bucket
-rateLimitService.resetBucket(key);
-```
+**Description:** Token bucket per user (or IP when anonymous). The bucket lives in Redis and is updated by a Lua script, so concurrent requests on several instances can never spend the same token. Policies: global API (`RATE_LIMIT_BUCKET_CAPACITY` burst, `RATE_LIMIT_REFILL_RATE` tokens/s), auth endpoints (`AUTH_RATE_LIMIT_PER_MINUTE`), analytics tracking. Responses carry `RateLimit-Limit` / `RateLimit-Remaining`, and 429s carry `Retry-After`; rejections are counted in `ecommerce_rate_limited_total`.
 
 #### 6. Idempotency Patterns
-**Location:** `services/idempotency/idempotencyService.js`
+**Location:** `src/services/idempotency/idempotencyService.ts`, `src/middleware/idempotency.ts`
 
-**Description:** Ensures duplicate requests don't cause duplicate orders. Uses idempotency keys for deduplication.
-
-**Key Features:**
-- Idempotency key validation
-- Response caching
-- UUID key generation
-- Automatic expiration
-- Pattern-based invalidation
-- Redis-backed storage
-
-**Usage Example:**
-```javascript
-const idempotencyService = new IdempotencyService(redisClient, {
-  expiration: 86400,
-  keyPrefix: 'idempotency:'
-});
-
-// Validate idempotency key
-if (!idempotencyService.isValidIdempotencyKey(key)) {
-  throw new Error('Invalid idempotency key');
-}
-
-// Check if already processed
-if (await idempotencyService.isProcessed(key)) {
-  const result = await idempotencyService.getCachedResponse(key);
-  return result;
-}
-
-// Process and store
-const result = await orderService.process(request);
-await idempotencyService.storeResponse(key, result);
-
-// Generate idempotency key
-const key = idempotencyService.generateIdempotencyKey();
-```
+**Description:** `Idempotency-Key` on `POST /api/checkout`, `POST /api/orders`, `POST /api/payments/create-intent` and refunds. The first request takes a lock (`SET NX`), runs, and stores status + body for 24 h; a retry with the same key and body gets the stored response (`Idempotent-Replayed: true`), a concurrent duplicate gets 409, and the same key with a different body gets 422. Orders also store the key in a unique column, and the key is forwarded to Stripe and PayPal so the provider never charges twice. Webhooks are deduplicated by provider event id (`processed_webhook_events`).
 
 #### 7. Structured Logging
-**Location:** `services/logging/structuredLoggingService.js`
+**Location:** `src/services/logging/structuredLoggingService.ts`, `src/middleware/requestContext.ts`, `src/utils/logger.ts`
 
-**Description:** Implements structured logging with correlation IDs and context for e-commerce audit logs.
+**Description:** Each request runs in an `AsyncLocalStorage` context with a correlation id (accepted from `X-Correlation-Id` or generated, echoed back and included in every error response), user id and IP, so every log line written while serving it carries them. JSON logs go to `logs/combined.log` and `logs/error.log`; payment, security and audit events (logins, failed logins, access denied, refunds, fraud decisions, account deletion, order lifecycle) also go to `logs/payments.log`.
 
-**Key Features:**
-- Structured log entries
-- Correlation ID tracking
-- User context tracking
-- Audit event logging
-- Order event logging
-- JSON-formatted log entries
-
-**Usage Example:**
-```javascript
-const loggingService = new StructuredLoggingService();
-
-// Set log context
-loggingService.setContext({
-  correlationId: StructuredLoggingService.createCorrelationId(),
-  userId,
-  orderId,
-  ipAddress
-});
-
-// Log information
-loggingService.logInformation('Product viewed', { productId });
-
-// Log warning
-loggingService.logWarning('Low stock warning', { productId, stock: 5 });
-
-// Log error
-loggingService.logError('Order failed', errorMessage, { orderId });
-
-// Log audit event
-loggingService.logAuditEvent('OrderCompleted', 'Order processed', { orderId });
-
-// Log order event
-loggingService.logOrderEvent(orderId, 'Completed', 'Order completed', { amount });
+```ts
+structuredLog.logAuditEvent('OrderRefunded', `Refunded ${amount} on ${orderNumber}`, { orderId, amount });
+structuredLog.logOrderEvent(orderId, 'PaymentCaptured', `Order ${orderNumber} paid via stripe`, { amount });
 ```
 
 #### 8. Error Handling Patterns
-**Location:** `services/errorHandling/errorHandlingService.js`
+**Location:** `src/services/errorHandling/errorHandlingService.ts`, `src/middleware/errorHandler.ts`
 
-**Description:** Implements resilience patterns including retry, circuit breaker, and timeout for external service calls.
-
-**Key Features:**
-- Retry with exponential backoff
-- Circuit breaker pattern
-- Timeout handling
-- Fallback strategy
-- Policy composition
-
-**Usage Example:**
-```javascript
-const errorHandling = new ErrorHandlingService({
-  retryCount: 3,
-  exceptionsAllowedBeforeBreaking: 5,
-  breakDuration: 60000,
-  timeoutDuration: 30000
-});
-
-// Execute with retry
-const result = await errorHandling.executeWithRetry(async () => {
-  return await externalService.callAPI();
-});
-
-// Execute with circuit breaker
-const result = await errorHandling.executeWithCircuitBreaker(async () => {
-  return await externalService.callAPI();
-});
-
-// Execute with timeout
-const result = await errorHandling.executeWithTimeout(async () => {
-  return await externalService.callAPI();
-});
-
-// Execute with all patterns
-const result = await errorHandling.executeWithResilience(async () => {
-  return await externalService.callAPI();
-});
-
-// Get circuit breaker state
-const state = errorHandling.getCircuitState();
-```
+**Description:** Retry with exponential backoff and jitter, circuit breaker (closed / open / half-open) and timeout, composed by `executeWithResilience`, with one breaker per dependency: Stripe, PayPal, Shippo, Mailchimp, Klaviyo, SMTP and each search engine. Only transient failures (network errors, timeouts, 429, 5xx) are retried or count against the breaker; a declined card is not a provider outage. `executeWithFallback` powers search (an Elasticsearch/Algolia/Meilisearch failure is answered by PostgreSQL full-text search). Breaker states: `GET /api/system/circuits`, reset with `POST /api/system/circuits/:name/reset`, gauge `ecommerce_circuit_breaker_open`. The error middleware maps validation, unique/foreign-key violations, open circuits (503), timeouts (504) and Stripe card errors (402) to proper statuses.
 
 #### 9. GoF Patterns
 
 ##### Strategy Pattern (Payment Providers)
-**Location:** `services/patterns/paymentStrategy.js`
+**Location:** `src/services/patterns/paymentStrategy.ts`
 
-**Description:** Strategy pattern for payment providers. Allows dynamic selection of payment processing strategies.
+**Description:** `PaymentStrategy` with three implementations: `StripePaymentStrategy` (PaymentIntents, refunds, idempotency keys), `PayPalPaymentStrategy` (Orders v2 REST API: OAuth client credentials, create, capture, refund by capture id) and `SandboxPaymentStrategy` (local test provider used when no Stripe key is set; confirms with Stripe-style test ids such as `pm_card_visa` and never sees card data). `PaymentStrategyFactory.fromEnv()` picks what is configured; `cardProvider()` decides whether cards go to Stripe or the sandbox, `getStrategyForCurrency()` selects by currency, and `calculateFee()` feeds the fee report.
 
-**Key Features:**
-- Multiple payment strategies (Stripe, PayPal)
-- Strategy factory for selection
-- Currency support checking
-- Fee calculation per provider
-- Refund processing
-- Class-based implementation
-
-**Usage Example:**
-```javascript
-const { StripePaymentStrategy, PayPalPaymentStrategy, PaymentStrategyFactory } = require('./paymentStrategy');
-
-// Create strategies
-const stripe = new StripePaymentStrategy(apiKey);
-const paypal = new PayPalPaymentStrategy(clientId, clientSecret);
-
-// Create factory
-const factory = new PaymentStrategyFactory({
-  stripe: stripe,
-  paypal: paypal
-});
-
-// Get strategy for provider
-const strategy = factory.getStrategy('stripe');
-
-// Get strategy for currency
-const strategy = factory.getStrategyForCurrency('USD');
-
-// Process payment
-const result = await strategy.processPayment({
-  customerId,
-  amount: 100.0,
-  currency: 'USD',
-  referenceNumber: 'REF-123',
-  description: 'Order payment'
-});
-
-// Process refund
-const refund = await strategy.processRefund({
-  transactionId: result.transactionId,
-  amount: 100.0,
-  reason: 'Customer request'
-});
-
-// Check currency support
-const supported = strategy.supportsCurrency('EUR');
-
-// Calculate fee
-const fee = strategy.calculateFee(100.0);
+```ts
+const strategy = payments.getStrategy(order.paymentMethod === 'paypal' ? 'paypal' : payments.cardProvider());
+const session = await strategy.createPayment({ orderId, amount, currency, idempotencyKey, ... });
+const refund = await payments.getStrategy(charge.provider).processRefund({ providerRef, amount, currency, idempotencyKey });
 ```
 
 ##### Factory Pattern (Order Creation)
-**Location:** `services/patterns/orderFactory.js`
+**Location:** `src/services/patterns/orderFactory.ts`
 
-**Description:** Factory pattern for order creation. Creates different types of orders based on order type.
-
-**Key Features:**
-- Order type-based creation
-- Standard, Express, Preorder orders
-- Order validation
-- Order processing
-- Order cancellation
-- Class-based implementation
-
-**Usage Example:**
-```javascript
-const { OrderFactory } = require('./orderFactory');
-
-const factory = new OrderFactory();
-
-// Create standard order
-const standardOrder = factory.createOrder('standard', {
-  amount: 1000,
-  customerId
-});
-
-// Validate
-standardOrder.validate();
-
-// Process
-await standardOrder.process();
-
-// Cancel
-await standardOrder.cancel();
-
-// Create express order
-const expressOrder = factory.createOrder('express', {
-  amount: 500,
-  customerId
-});
-
-expressOrder.validate();
-await expressOrder.process();
-```
+**Description:** `OrderFactory.createOrder(type)` returns `StandardOrder`, `ExpressOrder` or `PreorderOrder`. Each type validates the cart (stock; express orders max 20 items; preorders only for out-of-stock items), decides whether stock is reserved at checkout (preorders reserve it when an admin releases them to processing) and the default shipping service, and sets the status after payment (preorders wait in `pending`).
 
 ## Configuration
 
-All services are configured via environment variables in `.env`:
+All settings are environment variables; `.env.example` documents every one. The HLD-specific ones:
 
 ```env
-DATABASE_URL=mongodb://localhost:27017/ecommerce_db
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/ecommerce
 REDIS_URL=redis://localhost:6379
-PORT=3000
 
-# Sharding Configuration
-SHARD_US_PREMIUM_CONNECTION=mongodb://localhost:27017/ecommerce_us_premium
-SHARD_US_STANDARD_CONNECTION=mongodb://localhost:27017/ecommerce_us_standard
-SHARD_EU_PREMIUM_CONNECTION=mongodb://localhost:27017/ecommerce_eu_premium
+# Sharding (analytics events) and read replicas
+DB_SHARDS=shard_a=postgres://.../shard_a,shard_b=postgres://.../shard_b
+DB_READ_REPLICAS=us-east|postgres://replica-1/ecommerce
+DB_REPLICA_MAX_LAG_SECONDS=30
 
-# Read Replica Configuration
-REPLICA_1_CONNECTION=mongodb://localhost:27018/ecommerce_db
-REPLICA_2_CONNECTION=mongodb://localhost:27019/ecommerce_db
-
-# Cache Configuration
-CACHE_DEFAULT_EXPIRATION=1800
+# Cache
+CACHE_DEFAULT_EXPIRATION=300
 CACHE_KEY_PREFIX=ecommerce:
 
-# Connection Pool Configuration
+# Connection pool (replica/shard clients)
 CONNECTION_POOL_MAX_SIZE=100
 CONNECTION_POOL_LIFETIME=1800000
 
-# Rate Limiting Configuration
+# Rate limiting
 RATE_LIMIT_BUCKET_CAPACITY=100
 RATE_LIMIT_REFILL_RATE=1.0
 
-# Idempotency Configuration
+# Idempotency
 IDEMPOTENCY_EXPIRATION=86400
 IDEMPOTENCY_KEY_PREFIX=idempotency:
 
-# Error Handling Configuration
-ERROR_HANDLING_RETRY_COUNT=3
+# Error handling
+ERROR_HANDLING_RETRY_COUNT=2
 ERROR_HANDLING_EXCEPTIONS_BEFORE_BREAKING=5
-ERROR_HANDLING_BREAK_DURATION=60000
-ERROR_HANDLING_TIMEOUT=30000
+ERROR_HANDLING_BREAK_DURATION=30000
+ERROR_HANDLING_TIMEOUT=15000
 
-# Capacity Configuration
+# Capacity
 CAPACITY_CORES_PER_SERVER=4
 CAPACITY_MEMORY_PER_SERVER_GB=16
 CAPACITY_REDIS_MEMORY_PER_NODE_GB=8
 
-# Compliance Configuration
+# Compliance
 COMPLIANCE_DATA_RETENTION_YEARS=7
 COMPLIANCE_REQUIRE_ENCRYPTION=true
 COMPLIANCE_REQUIRE_AUDIT_LOGGING=true
@@ -673,202 +199,102 @@ COMPLIANCE_REQUIRE_AUDIT_LOGGING=true
 
 ## Dependencies
 
-Required dependencies in `package.json`:
-
-```json
-{
-  "dependencies": {
-    "express": "^4.18.0",
-    "mongoose": "^8.0.0",
-    "redis": "^4.6.0",
-    "uuid": "^9.0.0",
-    "dotenv": "^16.3.0",
-    "joi": "^17.11.0",
-    "jsonwebtoken": "^9.0.0",
-    "bcrypt": "^5.1.0"
-  }
-}
-```
+Runtime dependencies are declared in `package.json`: express, sequelize + pg, ioredis, umzug, zod, jsonwebtoken, bcryptjs, helmet, cors, winston, prom-client, stripe, axios (PayPal, Shippo, Mailchimp, Klaviyo), nodemailer, graphql + graphql-http, @trpc/server, @elastic/elasticsearch, algoliasearch, meilisearch, swagger-ui-express.
 
 ## Architecture Diagram
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                     API Gateway Layer                        │
-│  (JWT Auth, Rate Limiting, Request Routing)                │
+│  correlation id · helmet/CORS · JWT auth · token-bucket      │
+│  rate limits · Idempotency-Key · REST / GraphQL / tRPC       │
 └─────────────────────────────────────────────────────────────┘
                               │
 ┌─────────────────────────────────────────────────────────────┐
 │                   Application Layer                          │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │ Controllers  │  │   Services   │  │   Patterns   │      │
-│  └──────────────┘  └──────────────┘  └──────────────┘      │
+│  routes/*  ·  services/commerce (cart, checkout, payments,    │
+│  refunds, discounts, shipping, tax, membership)  ·  fraud    │
+│  analytics + A/B tests  ·  marketing  ·  integrations · jobs │
 └─────────────────────────────────────────────────────────────┘
                               │
 ┌─────────────────────────────────────────────────────────────┐
-│                   Business Logic Layer                      │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │ Saga Manager │  │   Repository │  │ Unit of Work │      │
-│  └──────────────┘  └──────────────┘  └──────────────┘      │
+│                   Business Logic Layer                       │
+│  Saga Manager · Repository · Unit of Work ·                  │
+│  Payment Strategy · Order Factory                            │
 └─────────────────────────────────────────────────────────────┘
                               │
 ┌─────────────────────────────────────────────────────────────┐
-│                   Infrastructure Layer                        │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │   Sharding   │  │ Read Replicas│  │ Distributed  │      │
-│  │   Service    │  │   Service    │  │    Cache     │      │
-│  └──────────────┘  └──────────────┘  └──────────────┘      │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │Connection    │  │   Rate       │  │ Idempotency  │      │
-│  │   Pool       │  │   Limiting   │  │   Service    │      │
-│  └──────────────┘  └──────────────┘  └──────────────┘      │
+│                   Infrastructure Layer                       │
+│  Sharding · Read Replicas · Distributed Cache ·              │
+│  Connection Pool · Rate Limiting · Idempotency ·             │
+│  Circuit breakers / retries / timeouts                       │
 └─────────────────────────────────────────────────────────────┘
                               │
 ┌─────────────────────────────────────────────────────────────┐
 │                   Data Layer                                 │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │ MongoDB     │  │    Redis     │  │   Elasticsearch│     │
-│  │  (Shards)    │  │   (Cache)    │  │   (Search)   │      │
-│  └──────────────┘  └──────────────┘  └──────────────┘      │
+│  PostgreSQL primary (+ replicas, + analytics shards)         │
+│  Redis (cache, limits, idempotency, counters, job locks)     │
+│  PostgreSQL FTS / Elasticsearch / Algolia / Meilisearch      │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ## Monitoring and Observability
 
 ### Health Checks
-- Database connection health
-- Redis connection health
-- Shard health status
-- Replica health status
-- Connection pool statistics
+- `GET /health` (liveness + database), `GET /ready` (no pending migrations)
+- `GET /api/system/health` (admin): database latency, Redis, replica lag, shard health, pool statistics, circuit breakers, search engines, background jobs, live traffic
 
-### Metrics
-- Request rate
-- Response times (P50, P95, P99)
-- Error rates
-- Cache hit/miss ratios
-- Connection pool utilization
-- Rate limiting statistics
+### Metrics (`GET /metrics`, Prometheus)
+- `ecommerce_http_requests_total`, `ecommerce_http_request_duration_seconds` (by route)
+- `ecommerce_cache_requests_total{result}` (hit/miss ratio)
+- `ecommerce_rate_limited_total{policy}`
+- `ecommerce_orders_created_total`, `ecommerce_payments_total{provider,outcome}`, `ecommerce_revenue_total`
+- `ecommerce_circuit_breaker_open{name}`, `ecommerce_db_pool_connections{state}`
+- default Node.js process metrics
 
 ### Logging
-- Structured logging with correlation IDs
-- Audit event logging
-- Order event logging
-- Error logging with stack traces
-- JSON-formatted log entries
+- Structured JSON logs with correlation ids; audit, payment and security events in `logs/payments.log`
 
 ## Security Features
 
-- JWT authentication
-- API rate limiting
-- Idempotency protection
-- Structured audit logging
-- Encryption at rest (configurable)
-- Encryption in transit (TLS)
+- JWT authentication with server-side revocation (token version bumped on logout, password change and account deletion)
+- bcrypt password hashing, password rules, brute-force limits on auth endpoints
+- Role-based access (customer, seller, admin)
+- Rate limiting, idempotency protection, webhook signature verification (Stripe and inbound partner webhooks), signed outgoing webhooks, SSRF protection for webhook targets, no open redirects in campaign links
+- Card data never touches the API (Stripe Elements / PayPal / sandbox test ids)
 
 ## Compliance Features
 
-- PCI DSS compliance tracking
-- GDPR compliance tracking
-- CCPA compliance tracking
-- Data retention policies
-- Audit log retention
-- Compliance scoring
+- Data retention setting and audit log (`logs/payments.log`)
+- GDPR/CCPA: `GET /api/auth/me/export` (data portability), `DELETE /api/auth/me` (erasure: account anonymised, orders kept for accounting)
+- Compliance scoring on `GET /api/system/constraints`
 
 ## Performance Optimizations
 
-- Database sharding for horizontal scaling
-- Read replicas for read-heavy workloads
-- Distributed caching for reduced latency
-- Connection pooling for reduced overhead
-- Database indexing for query optimization
-- Node.js async/await for concurrency
+- Analytics events sharded by customer when needed; report queries on read replicas
+- Shared Redis cache for catalog reads with invalidation on writes
+- Pooled connections for primary, replicas and shards
+- Composite, partial and GIN indexes; full-text search instead of `LIKE` scans
+- Keyset pagination for large lists
 
 ## Resilience Features
 
-- Retry with exponential backoff
-- Circuit breaker pattern
-- Timeout handling
-- Fallback strategies
-- Automatic failover
-- Health monitoring
+- Retry with exponential backoff and jitter, circuit breakers and timeouts per external dependency
+- Search falls back to PostgreSQL when an external engine fails
+- Replica failover to the primary; Redis failures degrade to the in-process store
+- Outgoing webhooks stored first and retried with backoff by a background job
+- Unpaid orders expire and release their stock; background jobs take a Redis lock so only one instance runs each tick
 
-## Testing Considerations
+## Verification
 
-### Unit Tests
-- Repository pattern tests
-- Unit of Work tests
-- Service layer tests
-- Pattern implementation tests
+Run on Windows against real services (Docker was not available on this machine, so the compose file and Dockerfiles were not run):
+- PostgreSQL 18 + Redis 8: 146 end-to-end API checks (auth, catalog, guest cart merge, discounts, checkout saga, idempotent replay, sandbox payments, fulfilment, partial/full refund saga, reviews, wishlist, membership, signed outgoing and inbound webhooks, fraud flagging, analytics, A/B stats, campaigns with open/click tracking, search, GraphQL, tRPC, system endpoints, metrics, GDPR export/delete).
+- The same suite with two shards and a read replica configured, and again with no Redis (in-process store) and Elasticsearch as the search engine; Elasticsearch shutdown falls back to PostgreSQL.
+- Stripe paths against stripe-mock: PaymentIntent creation, signed webhook, duplicate webhook, refund.
+- Migrations: up, down x3, up, seed twice (idempotent).
+- Storefront and admin: 22 browser checks in Microsoft Edge.
 
-### Integration Tests
-- Database sharding tests
-- Read replica tests
-- Distributed cache tests
-- Rate limiting tests
-- Idempotency tests
-
-### Performance Tests
-- Load testing with capacity estimation
-- Stress testing with rate limiting
-- Failover testing with circuit breaker
-- Latency testing with caching
-
-## Deployment Considerations
-
-### Environment Variables
-- All sensitive configuration via environment variables
-- Separate configurations for dev/staging/prod
-- Feature flags for experimental features
-
-### Scaling
-- Horizontal scaling with sharding
-- Vertical scaling with capacity estimation
-- Auto-scaling based on metrics
-- Multi-region deployment with read replicas
-
-### Monitoring
-- Application Performance Monitoring (APM)
-- Log aggregation
-- Metrics collection and alerting
-- Distributed tracing
-
-## Node.js-Specific Best Practices
-
-1. **Use async/await** for asynchronous operations
-2. **Leverage modules** for code organization
-3. **Use promises** for async control flow
-4. **Implement proper error handling** with try/catch
-5. **Use event loop** efficiently for non-blocking I/O
-6. **Leverage streams** for data processing
-7. **Use worker threads** for CPU-intensive tasks
-8. **Implement proper logging** with structured logs
-9. **Use cluster mode** for multi-core utilization
-10. **Leverage npm** for dependency management
-
-## Troubleshooting
-
-### Common Issues
-
-**Connection Pool Exhaustion**
-- Check pool statistics
-- Increase max pool size
-- Optimize connection usage
-
-**Cache Stampede**
-- Implement cache locking
-- Use cache warming
-- Monitor cache hit rates
-
-**Circuit Breaker Tripping**
-- Check external service health
-- Adjust circuit breaker thresholds
-- Implement fallback strategies
-
-**Shard Imbalance**
-- Monitor shard distribution
-- Rebalance shards
-- Adjust shard weights
+Not verified here: live Stripe/PayPal/Shippo/Mailchimp/Klaviyo accounts, Algolia and Meilisearch (adapters written to their current SDKs, not run), real PostgreSQL streaming replication (replica routing was tested against a second connection to the primary), Docker images and Kubernetes.
 
 ## References
 
@@ -877,12 +303,8 @@ Required dependencies in `package.json`:
 - [Unit of Work Pattern](https://martinfowler.com/eaaCatalog/unitOfWork.html)
 - [Token Bucket Algorithm](https://en.wikipedia.org/wiki/Token_bucket)
 - [Circuit Breaker Pattern](https://martinfowler.com/bliki/CircuitBreaker.html)
+- [Consistent Hashing](https://en.wikipedia.org/wiki/Consistent_hashing)
 - [Strategy Pattern](https://refactoring.guru/design-patterns/strategy)
 - [Factory Pattern](https://refactoring.guru/design-patterns/factory-method)
-- [Node.js Documentation](https://nodejs.org/docs/)
-- [Express.js Guide](https://expressjs.com/en/guide/routing.html)
-- [Mongoose Documentation](https://mongoosejs.com/docs/)
-
-## Summary
-
-This implementation provides a comprehensive set of HLD and LLD patterns for a production-ready e-commerce application in Node.js. All patterns are implemented with best practices, proper error handling, monitoring, and documentation. The system is designed for scalability, reliability, and compliance with e-commerce regulations, leveraging Node.js's event-driven architecture, async/await patterns, and npm ecosystem for rapid development and maintainability.
+- [Stripe idempotent requests](https://docs.stripe.com/api/idempotent_requests)
+- [PostgreSQL full-text search](https://www.postgresql.org/docs/current/textsearch.html)
